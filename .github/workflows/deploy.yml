@@ -7,7 +7,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: gaboemi-duoc/cloudevaluacion
   CONTAINER_NAME: cloud-evaluacion
 
 jobs:
@@ -49,8 +49,8 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/gaboemi-duoc/cloudevaluacion:latest
-          
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
       # 5. Despliegue Automatizado e Idempotente vía SSH
       - name: Deploy to EC2 Instance
         uses: appleboy/ssh-action@v1.0.3
