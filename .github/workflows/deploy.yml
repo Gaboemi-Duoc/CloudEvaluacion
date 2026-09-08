@@ -49,7 +49,7 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          tags: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:latest
 
       # 5. Despliegue Automatizado e Idempotente vía SSH
       - name: Deploy to EC2 Instance
