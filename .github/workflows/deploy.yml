@@ -49,8 +49,8 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:latest
-
+          tags: ghcr.io/gaboemi-duoc/cloudevaluacion:latest
+          
       # 5. Despliegue Automatizado e Idempotente vía SSH
       - name: Deploy to EC2 Instance
         uses: appleboy/ssh-action@v1.0.3
