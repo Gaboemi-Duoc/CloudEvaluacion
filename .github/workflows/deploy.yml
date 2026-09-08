@@ -55,7 +55,7 @@ jobs:
       - name: Deploy to EC2 Instance
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ vars.TARGET_HOST_IP }}  # Lee tu IP 18.216.244.5
+          host: ${{ vars.TARGET_HOST_IP }}  # Lee tu IP EC2
           username: ec2-user                 # Usuario Amazon Linux
           key: ${{ secrets.EC2_SSH_KEY }}     # Tu llave .pem
           port: 22
