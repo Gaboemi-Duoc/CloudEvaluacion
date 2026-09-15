@@ -21,11 +21,11 @@ public class EnrollmentService {
     }
 
     public List<Enrollment> findByStudent(String studentId) {
-        return enrollmentRepository.findByStudentId(studentId);
+        return enrollmentRepository.findByStudentIdFetchCourse(studentId);
     }
 
     public List<Enrollment> findByCourse(Long courseId) {
-        return enrollmentRepository.findByCourseId(courseId);
+        return enrollmentRepository.findByCourseIdFetchCourse(courseId);
     }
 
     public boolean isEnrolled(Long courseId, String studentId) {
