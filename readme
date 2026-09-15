@@ -1,0 +1,561 @@
+# CloudEvaluacion - Backend Spring Boot
+
+Backend del sistema **Pedidos360 / CloudEvaluacion** para la asignatura **DSY1107 Desarrollo Cloud Native**. Expone una API REST protegida con **AWS Cognito** (IDaaS) y validacion por **JWT**, persistencia en **PostgreSQL** (Supabase), y despliegue automatizado en **AWS EC2** a traves de **GitHub Container Registry (GHCR)** y **AWS API Gateway**.
+
+---
+
+## Tabla de contenidos
+
+1. [Descripcion](#descripcion)
+2. [Arquitectura](#arquitectura)
+3. [Stack tecnologico](#stack-tecnologico)
+4. [Estructura del proyecto](#estructura-del-proyecto)
+5. [Requisitos previos](#requisitos-previos)
+6. [Configuracion](#configuracion)
+7. [Ejecucion local](#ejecucion-local)
+8. [Endpoints de la API](#endpoints-de-la-api)
+9. [Autenticacion y autorizacion](#autenticacion-y-autorizacion)
+10. [Base de datos](#base-de-datos)
+11. [Despliegue](#despliegue)
+12. [Pruebas](#pruebas)
+13. [Seguridad](#seguridad)
+
+---
+
+## Descripcion
+
+El backend implementa la logica de negocio de un sistema de gestion academica con tres roles:
+
+| Rol | Responsabilidades |
+|---|---|
+| **ADMIN** | Crear cursos, asignar profesores, inscribir y eliminar alumnos |
+| **TEACHER** | Ver sus cursos, gestionar alumnos inscritos, crear tareas |
+| **STUDENT** | Ver cursos inscritos, auto-inscribirse, ver tareas asignadas |
+
+El sistema **no gestiona el login**: delega la autenticacion a **AWS Cognito**. El backend solo valida el JWT que recibe en cada peticion y extrae la identidad y los roles desde los claims del token.
+
+---
+
+## Arquitectura
+
+```
++--------------+    HTTPS     +--------------+    HTTP     +------------------+
+|              |------------->|              |------------>|                  |
+|  Angular/    |  Bearer JWT  | AWS API      |  + header   |  EC2             |
+|  React SPA   |              | Gateway      |  X-Secret-  |  +------------+  |
+|  (Vercel)    |<-------------| (HTTP API)   |  Gateway    |  | Spring Boot|  |
+|              |              |              |             |  | (Docker)   |  |
++--------------+              +--------------+             |  +-----+------+  |
+       |                                                     +--------+--------+
+       |                                                              |
+       |  Authorization Code + PKCE                                   | JDBC/TLS
+       v                                                              v
++--------------+                                            +------------------+
+| AWS Cognito  |                                            |  PostgreSQL      |
+| (User Pool)  |                                            |  (Supabase)      |
++--------------+                                            +------------------+
+```
+
+Flujo de una peticion:
+
+1. El frontend obtiene un **`id_token`** de Cognito mediante el flujo Authorization Code + PKCE.
+2. Envia la peticion a API Gateway con `Authorization: Bearer <id_token>`.
+3. API Gateway inyecta el header `X-Secret-Gateway` (desde una variable de stage) y reenvia a EC2.
+4. Spring Boot verifica en orden:
+   - **`SecretGatewayFilter`**: rechaza con 403 si falta `X-Secret-Gateway`.
+   - **`BearerTokenAuthenticationFilter`**: valida la firma del JWT contra el JWKS de Cognito, el issuer y la expiracion.
+   - **`CognitoJwtAuthenticationConverter`**: traduce `cognito:groups` a authorities `ROLE_*`.
+   - **`@PreAuthorize`** en el controlador: autoriza segun el rol.
+
+---
+
+## Stack tecnologico
+
+| Componente | Version |
+|---|---|
+| Java | 21 |
+| Spring Boot | 4.1.1 |
+| Spring Security | 7.x |
+| Spring Data JPA | (incluido) |
+| Hibernate | 7.x |
+| PostgreSQL | 16+ (Supabase) |
+| Docker | Ultima estable |
+| Gradle | Wrapper incluido |
+
+Dependencias clave:
+
+- `spring-boot-starter-security`: filtros de seguridad
+- `spring-boot-starter-security-oauth2-resource-server`: validacion de JWT
+- `spring-boot-starter-webmvc`: API REST
+- `spring-boot-starter-data-jpa`: persistencia
+- `spring-boot-starter-validation`: validacion de DTOs
+- `org.postgresql:postgresql`: driver JDBC
+- `org.projectlombok:lombok`: reduccion de boilerplate
+
+---
+
+## Estructura del proyecto
+
+```
+src/main/java/alumno/gaboemi/cloudevaluacion/
+├── CloudEvaluacionApplication.java
+├── config/
+│   ├── SecurityConfig.java
+│   └── SecretGatewayFilter.java
+├── security/
+│   └── CognitoJwtAuthenticationConverter.java
+├── domain/
+│   ├── Course.java
+│   ├── Enrollment.java
+│   └── Task.java
+├── repository/
+│   ├── CourseRepository.java
+│   ├── EnrollmentRepository.java
+│   └── TaskRepository.java
+├── dto/
+│   ├── CourseResponse.java
+│   ├── CreateCourseRequest.java
+│   ├── AssignTeacherRequest.java
+│   ├── TaskResponse.java
+│   ├── CreateTaskRequest.java
+│   ├── EnrollmentResponse.java
+│   ├── EnrollStudentRequest.java
+│   └── MeResponse.java
+├── service/
+│   ├── CourseService.java
+│   ├── EnrollmentService.java
+│   └── TaskService.java
+├── controller/
+│   ├── HealthController.java
+│   ├── MeController.java
+│   ├── AdminCourseController.java
+│   ├── TeacherCourseController.java
+│   └── StudentController.java
+└── exception/
+    ├── NotFoundException.java
+    └── GlobalExceptionHandler.java
+```
+
+---
+
+## Requisitos previos
+
+- **JDK 21** ([Temurin](https://adoptium.net/) recomendado)
+- **Docker** (para el despliegue)
+- **PostgreSQL** local o una cuenta de [Supabase](https://supabase.com/)
+- **Cuenta de AWS** con:
+  - User Pool de Cognito configurado
+  - Instancia EC2 (Amazon Linux 2023)
+  - API Gateway HTTP API
+- **Gradle Wrapper** (incluido en el repositorio, no necesitas instalar Gradle)
+
+---
+
+## Configuracion
+
+Todas las variables de entorno tienen valores por defecto para desarrollo local, pero en produccion **siempre** deben sobrescribirse.
+
+### Variables de entorno
+
+| Variable | Descripcion | Ejemplo |
+|---|---|---|
+| `PORT` | Puerto del servidor | `8080` |
+| `PUBLIC_HOST_URL` | URL publica del backend | `http://localhost:8080` |
+| `API_GATEWAY_SECRET` | Secreto compartido con API Gateway | `wrcUOJQGxFQg4Njl...` |
+| `COGNITO_ISSUER_URI` | Issuer URI del User Pool | `https://cognito-idp.us-east-1.amazonaws.com/us-east-1_NN6vjj3k5` |
+| `DB_URL` | URL JDBC de PostgreSQL | `jdbc:postgresql://...:5432/postgres?sslmode=require` |
+| `DB_USER` | Usuario de la base de datos | `postgres.qhdhulonucuknqpmdcxr` |
+| `DB_PASSWORD` | Password de la base de datos | `********` |
+| `JPA_DDL` | Estrategia DDL de Hibernate | `update` |
+
+### `application.properties`
+
+```properties
+spring.application.name=CloudEvaluacion
+
+server.port=${PORT:8080}
+app.public-host=${PUBLIC_HOST_URL:http://localhost:8080}
+app.gateway.secret=${API_GATEWAY_SECRET:secreto_local}
+
+# ---------- Cognito (IDaaS) ----------
+spring.security.oauth2.resourceserver.jwt.issuer-uri=${COGNITO_ISSUER_URI:https://cognito-idp.us-east-1.amazonaws.com/us-east-1_NN6vjj3k5}
+
+# ---------- PostgreSQL ----------
+spring.datasource.url=${DB_URL:jdbc:postgresql://localhost:5432/cloudevaluacion}
+spring.datasource.username=${DB_USER:postgres}
+spring.datasource.password=${DB_PASSWORD:postgres}
+spring.jpa.hibernate.ddl-auto=${JPA_DDL:update}
+spring.jpa.open-in-view=false
+spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
+
+logging.level.org.springframework.security=INFO
+```
+
+---
+
+## Ejecucion local
+
+### 1. Clonar el repositorio
+
+```bash
+git clone https://github.com/gaboemi-duoc/cloudevaluacion.git
+cd cloudevaluacion
+```
+
+### 2. Levantar PostgreSQL con Docker
+
+```bash
+docker run -d --name pg-local \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=cloudevaluacion \
+  -p 5432:5432 \
+  postgres:16
+```
+
+O usar Supabase directamente configurando `DB_URL`, `DB_USER` y `DB_PASSWORD`.
+
+### 3. Ejecutar la aplicacion
+
+```bash
+./gradlew bootRun
+```
+
+En Windows:
+
+```powershell
+.\gradlew.bat bootRun
+```
+
+La aplicacion arranca en `http://localhost:8080` con el secreto `secreto_local` por defecto.
+
+### 4. Verificar el arranque
+
+```bash
+curl -i -H "X-Secret-Gateway: secreto_local" http://localhost:8080/api/health
+```
+
+Salida esperada:
+
+```
+HTTP/1.1 200 OK
+{"status":"UP"}
+```
+
+---
+
+## Endpoints de la API
+
+Todos los endpoints (excepto `/api/health`) requieren:
+
+- Header `Authorization: Bearer <id_token>` validado contra Cognito
+- Header `X-Secret-Gateway: <secreto>` validado por `SecretGatewayFilter`
+
+### Publicos
+
+| Metodo | Ruta | Descripcion |
+|---|---|---|
+| `GET` | `/api/health` | Health check |
+
+### Identidad
+
+| Metodo | Ruta | Rol | Descripcion |
+|---|---|---|---|
+| `GET` | `/api/me` | Autenticado | Devuelve subject, email y roles del token actual |
+
+### Admin
+
+| Metodo | Ruta | Descripcion |
+|---|---|---|
+| `GET` | `/api/admin/courses` | Lista todos los cursos |
+| `GET` | `/api/admin/courses/{id}` | Obtiene un curso por ID |
+| `POST` | `/api/admin/courses` | Crea un curso y asigna profesor |
+| `PUT` | `/api/admin/courses/{id}/teacher` | Reasigna el profesor del curso |
+| `DELETE` | `/api/admin/courses/{id}` | Elimina un curso |
+| `GET` | `/api/admin/courses/{id}/students` | Lista los alumnos inscritos |
+| `POST` | `/api/admin/courses/{id}/enrollments` | Inscribe a un alumno |
+| `DELETE` | `/api/admin/courses/{id}/enrollments/{eid}` | Elimina a un alumno del curso |
+
+### Teacher
+
+| Metodo | Ruta | Descripcion |
+|---|---|---|
+| `GET` | `/api/teacher/courses` | Lista los cursos asignados al profesor |
+| `GET` | `/api/teacher/courses/{id}/students` | Lista alumnos del curso |
+| `POST` | `/api/teacher/courses/{id}/enrollments` | Inscribe un alumno |
+| `GET` | `/api/teacher/courses/{id}/tasks` | Lista tareas del curso |
+| `POST` | `/api/teacher/courses/{id}/tasks` | Crea una tarea |
+
+### Student
+
+| Metodo | Ruta | Descripcion |
+|---|---|---|
+| `GET` | `/api/student/courses` | Lista cursos inscritos |
+| `GET` | `/api/student/courses/available` | Lista cursos disponibles |
+| `POST` | `/api/student/courses/{id}/enroll` | Auto-inscripcion |
+| `GET` | `/api/student/courses/{id}/tasks` | Tareas de un curso (si esta inscrito) |
+| `GET` | `/api/student/tasks` | Todas las tareas del alumno |
+
+### Ejemplos
+
+**Crear curso (ADMIN):**
+
+```bash
+curl -X POST https://<api-gateway>/api/admin/courses \
+  -H "Authorization: Bearer $ID_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Desarrollo Cloud Native",
+    "description": "DSY1107",
+    "teacherId": "profesor@duoc.cl"
+  }'
+```
+
+**Listar mis cursos (TEACHER):**
+
+```bash
+curl https://<api-gateway>/api/teacher/courses \
+  -H "Authorization: Bearer $ID_TOKEN"
+```
+
+**Ver identidad actual:**
+
+```bash
+curl https://<api-gateway>/api/me \
+  -H "Authorization: Bearer $ID_TOKEN"
+```
+
+---
+
+## Autenticacion y autorizacion
+
+### Flujo de validacion
+
+1. **`SecretGatewayFilter`** (antes de Spring Security)
+   Compara `X-Secret-Gateway` con `app.gateway.secret`. Si no coincide, responde **403**.
+
+2. **`BearerTokenAuthenticationFilter`** (Spring Security)
+   - Descarga el JWKS de Cognito desde `{issuer-uri}/.well-known/jwks.json`.
+   - Verifica la firma RS256 del JWT.
+   - Valida el claim `iss` (issuer) y `exp` (expiracion).
+   - Si algo falla, responde **401**.
+
+3. **`CognitoJwtAuthenticationConverter`**
+   Traduce el claim `cognito:groups` a authorities `ROLE_*`:
+   - `["ADMIN"]` a `ROLE_ADMIN`
+   - `["TEACHER"]` a `ROLE_TEACHER`
+   - `["STUDENT"]` a `ROLE_STUDENT`
+
+4. **`@PreAuthorize`** (controladores)
+   Autoriza segun el rol requerido. Si falta, responde **403**.
+
+### Configuracion en Cognito
+
+En el **User Pool** de Cognito, crear tres grupos exactamente con estos nombres (mayusculas):
+
+- `ADMIN`
+- `TEACHER`
+- `STUDENT`
+
+Los nombres son sensibles a mayusculas: `Admin` no es igual a `ADMIN` en `hasRole('ADMIN')`.
+
+### Claims usados por el backend
+
+| Claim | Uso |
+|---|---|
+| `email` | Identidad del usuario (se usa como `teacherId` y `studentId`) |
+| `sub` | Fallback si no hay `email` |
+| `cognito:groups` | Roles (`ROLE_*`) |
+| `iss` | Validado contra `issuer-uri` |
+| `exp` | Validado automaticamente |
+
+Nota importante: usar **`id_token`**, no `access_token`. Los access tokens de Cognito no incluyen el claim `email`.
+
+---
+
+## Base de datos
+
+El backend usa **PostgreSQL**. Se recomienda **Supabase** para entornos cloud por su capa gratuita y compatibilidad total con JDBC.
+
+### Configuracion en Supabase
+
+1. Crear un proyecto en [supabase.com](https://supabase.com/).
+2. Obtener las credenciales en **Project Settings > Database**:
+   - Host: `aws-0-<region>.pooler.supabase.com`
+   - Port: `5432`
+   - Database: `postgres`
+   - User: `postgres.<project-ref>`
+   - Password: la que elegiste al crear el proyecto
+3. Construir la URL JDBC:
+
+```
+jdbc:postgresql://aws-0-us-west-2.pooler.supabase.com:5432/postgres?sslmode=require
+```
+
+Notas clave:
+
+- El prefijo `jdbc:` es **obligatorio**; Spring Boot falla si falta.
+- `?sslmode=require` es **obligatorio**; Supabase rechaza conexiones sin TLS.
+- El usuario debe incluir el `.project-ref`, no solo `postgres`.
+
+### Esquema de tablas
+
+Hibernate crea las tablas automaticamente con `spring.jpa.hibernate.ddl-auto=update`:
+
+| Tabla | Columnas |
+|---|---|
+| `courses` | `id`, `name`, `description`, `teacher_id`, `created_at` |
+| `enrollments` | `id`, `course_id`, `student_id`, `created_at` |
+| `tasks` | `id`, `course_id`, `title`, `description`, `due_date`, `created_at` |
+
+Los campos `teacher_id` y `student_id` almacenan el **email** del usuario de Cognito.
+
+---
+
+## Despliegue
+
+El despliegue esta automatizado con **GitHub Actions** y se define en `.github/workflows/deploy.yml`.
+
+### Flujo del pipeline
+
+```
+push a main
+   |
+   +--> JDK 21 + build con Gradle (bootJar)
+   |
+   +--> Build imagen Docker
+   |
+   +--> Push a GHCR (ghcr.io/gaboemi-duoc/cloudevaluacion:latest)
+   |
+   +--> SSH a EC2
+         +-- Instala Docker si falta
+         +-- Crea swap 2GB si falta
+         +-- docker pull de la imagen
+         +-- docker stop/rm del contenedor anterior
+         +-- docker run con las env vars
+```
+
+### Secrets necesarios en GitHub
+
+| Secret | Descripcion |
+|---|---|
+| `EC2_SSH_KEY` | Llave `.pem` para SSH a EC2 |
+| `GH_CR_PAT` | Personal Access Token de GitHub (para pull desde GHCR) |
+| `API_GATEWAY_SECRET` | Secreto compartido con API Gateway |
+| `COGNITO_ISSUER_URI` | Issuer URI del User Pool |
+| `DB_URL` | URL JDBC de Supabase |
+| `DB_USER` | Usuario de Supabase |
+| `DB_PASSWORD` | Password de Supabase |
+
+### Variables de repositorio
+
+| Variable | Descripcion |
+|---|---|
+| `TARGET_HOST_IP` | IP publica o DNS de la instancia EC2 |
+
+### Configuracion de API Gateway
+
+1. Crear un **HTTP API** en AWS API Gateway.
+2. Configurar la **integracion** apuntando a `http://<ec2-public-dns>:80`.
+3. Crear una ruta **`ANY /api/{proxy+}`** con autorizacion **`None`** (el backend valida el JWT).
+4. En **Request parameters > Add header**, mapear:
+   - Header: `X-Secret-Gateway`
+   - Value: `$stageVariables.gatewaySecret`
+5. En **Stage variables**, definir `gatewaySecret` con el mismo valor que `API_GATEWAY_SECRET` en EC2.
+6. Configurar **CORS**:
+   - `Access-Control-Allow-Origin`: dominios del frontend (sin barra final)
+   - `Access-Control-Allow-Methods`: `GET, POST, PUT, DELETE, OPTIONS`
+   - `Access-Control-Allow-Headers`: `Authorization, Content-Type`
+
+### Puerto en EC2
+
+El contenedor mapea el puerto **80 del host** al **8080 del contenedor**:
+
+```yaml
+docker run -d \
+  --name cloud-evaluacion \
+  -p 80:8080 \
+  -e PORT=8080 \
+  ...
+```
+
+El **Security Group** de la instancia EC2 debe permitir:
+
+- **TCP 22** desde tu IP (SSH)
+- **TCP 80** desde `0.0.0.0/0` (API Gateway) o desde el prefijo de IP de API Gateway
+
+---
+
+## Pruebas
+
+### Ejecutar la suite
+
+```bash
+./gradlew test
+```
+
+### Prueba manual de los tres escenarios de seguridad
+
+```bash
+API="https://<api-gateway-id>.execute-api.<region>.amazonaws.com"
+TOKEN="eyJraWQiOiJ..."   # id_token valido de Cognito
+
+# Token valido -> 200
+curl -i -H "Authorization: Bearer $TOKEN" "$API/api/me"
+
+# Sin token -> 401
+curl -i "$API/api/me"
+
+# Token con rol insuficiente -> 403
+STUDENT_TOKEN="eyJraWQiOiJ..."   # id_token de un usuario STUDENT
+curl -i -H "Authorization: Bearer $STUDENT_TOKEN" "$API/api/admin/courses"
+```
+
+---
+
+## Seguridad
+
+### Capas de defensa
+
+| Capa | Componente | Protege contra |
+|---|---|---|
+| 1 | API Gateway | Exposicion directa de EC2, rate limiting |
+| 2 | `SecretGatewayFilter` | Peticiones fuera de API Gateway |
+| 3 | `BearerTokenAuthenticationFilter` | Tokens falsificados o expirados |
+| 4 | `CognitoJwtAuthenticationConverter` | Escalada de privilegios por manipulacion de roles |
+| 5 | `@PreAuthorize` | Acceso no autorizado a endpoints |
+
+### Buenas practicas implementadas
+
+- **PKCE** en el flujo de login del frontend (Authorization Code + PKCE).
+- **Validacion de firma** con JWKS de Cognito, no con clave estatica.
+- **Sin `client_secret`** en el frontend (SPA publica).
+- **Sin `open-in-view`** en Hibernate (evita fugas de conexiones).
+- **`X-Secret-Gateway`** como control de origen para EC2.
+- **TLS obligatorio** con Supabase (`?sslmode=require`).
+
+### Recomendaciones
+
+- **Rotar `API_GATEWAY_SECRET`** periodicamente y tras cualquier filtracion.
+- **Usar IAM Roles** en EC2 en lugar de credenciales estaticas.
+- **Restringir el Security Group de EC2** al prefijo de IP de API Gateway en produccion.
+- **Habilitar CloudWatch Logs** en API Gateway para auditar peticiones.
+- **Anadir un validador de audiencia** al `JwtDecoder` si se requieren varios clientes.
+
+---
+
+## Recursos
+
+- [Spring Boot Documentation](https://docs.spring.io/spring-boot/docs/current/reference/html/)
+- [Spring Security OAuth 2.0 Resource Server](https://docs.spring.io/spring-security/reference/servlet/oauth2/resource-server/index.html)
+- [AWS Cognito Developer Guide](https://docs.aws.amazon.com/cognito/latest/developerguide/what-is-amazon-cognito.html)
+- [AWS API Gateway HTTP APIs](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api.html)
+- [Supabase Database Documentation](https://supabase.com/docs/guides/database)
+
+---
+
+## Autor
+
+**Gabriel Emilio** - `gaboemi@duoc.cl`
+
+Asignatura: **DSY1107 Desarrollo Cloud Native**
+Evaluacion Parcial N 1 - 2026
