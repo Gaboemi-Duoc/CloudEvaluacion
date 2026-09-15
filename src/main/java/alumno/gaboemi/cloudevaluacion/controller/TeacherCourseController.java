@@ -17,7 +17,7 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/teacher/courses")
-@PreAuthorize("hasRole('TEACHER')")
+@PreAuthorize("hasRole('Teacher')")
 public class TeacherCourseController {
 
     private final CourseService courseService;

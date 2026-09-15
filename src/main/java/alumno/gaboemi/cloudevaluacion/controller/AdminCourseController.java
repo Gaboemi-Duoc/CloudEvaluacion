@@ -12,7 +12,7 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/admin/courses")
-@PreAuthorize("hasRole('ADMIN')")
+@PreAuthorize("hasRole('Admin')")
 public class AdminCourseController {
 
     private final CourseService courseService;
