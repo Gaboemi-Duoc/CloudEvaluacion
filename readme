@@ -231,7 +231,7 @@ La aplicacion arranca en `http://localhost:8080` con el secreto `secreto_local` 
 ### 4. Verificar el arranque
 
 ```bash
-curl -i -H "X-Secret-Gateway: secreto_local" http://localhost:8080/api/health
+curl -i -H "X-Secret-Gateway: secreto_local" http://localhost:8080/health
 ```
 
 Salida esperada:
@@ -245,7 +245,7 @@ HTTP/1.1 200 OK
 
 ## Endpoints de la API
 
-Todos los endpoints (excepto `/api/health`) requieren:
+Todos los endpoints (excepto `/health`) requieren:
 
 - Header `Authorization: Bearer <id_token>` validado contra Cognito
 - Header `X-Secret-Gateway: <secreto>` validado por `SecretGatewayFilter`
@@ -254,7 +254,7 @@ Todos los endpoints (excepto `/api/health`) requieren:
 
 | Metodo | Ruta | Descripcion |
 |---|---|---|
-| `GET` | `/api/health` | Health check |
+| `GET` | `/health` | Health check |
 
 ### Identidad
 

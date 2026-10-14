@@ -24,7 +24,7 @@ public class SecurityConfig {
 			// Only the API Gateway (with the shared secret) can reach us
 			.addFilterBefore(secretGatewayFilter, UsernamePasswordAuthenticationFilter.class)
 			.authorizeHttpRequests(auth -> auth
-				.requestMatchers("/api/health").permitAll()
+				.requestMatchers("/health").permitAll()
 				.anyRequest().authenticated())
 			.oauth2ResourceServer(oauth2 -> oauth2
 				.jwt(jwt -> jwt.jwtAuthenticationConverter(
