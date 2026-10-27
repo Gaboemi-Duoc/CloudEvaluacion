@@ -1,6 +1,6 @@
 package alumno.gaboemi.cloudevaluacion.client;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;   // <-- Jackson 3
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.services.sns.SnsClient;
 import software.amazon.awssdk.services.sns.model.MessageAttributeValue;
@@ -11,16 +11,16 @@ import java.util.Map;
 @Component
 public class AwsSnsClient {
     private final SnsClient snsClient;
-    private final ObjectMapper objectMapper;
+    private final JsonMapper jsonMapper;
 
-    public AwsSnsClient(ObjectMapper objectMapper) {
+    public AwsSnsClient(JsonMapper jsonMapper) {
         this.snsClient = SnsClient.builder().build();
-        this.objectMapper = objectMapper;
+        this.jsonMapper = jsonMapper;
     }
 
     public void publishEvent(String action, Object data) {
         try {
-            String message = objectMapper.writeValueAsString(
+            String message = jsonMapper.writeValueAsString(
                 Map.of("action", action, "data", data)
             );
 
