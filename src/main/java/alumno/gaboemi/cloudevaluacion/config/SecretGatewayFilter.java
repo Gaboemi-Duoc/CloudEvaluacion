@@ -35,4 +35,10 @@ public class SecretGatewayFilter extends OncePerRequestFilter {
 
         filterChain.doFilter(request, response);
     }
+
+    @Override
+    protected boolean shouldNotFilter(HttpServletRequest request) {
+        return "GET".equalsIgnoreCase(request.getMethod())
+                && "/health".equals(request.getServletPath());
+    }
 }

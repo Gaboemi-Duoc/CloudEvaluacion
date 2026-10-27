@@ -1,81 +1,69 @@
 package alumno.gaboemi.cloudevaluacion.controller;
 
-import alumno.gaboemi.cloudevaluacion.model.Course;
+import alumno.gaboemi.cloudevaluacion.client.AwsLambdaClient;
+import alumno.gaboemi.cloudevaluacion.client.AwsSnsClient;
 import alumno.gaboemi.cloudevaluacion.dto.*;
-import alumno.gaboemi.cloudevaluacion.service.CourseService;
-import alumno.gaboemi.cloudevaluacion.service.EnrollmentService;
-import alumno.gaboemi.cloudevaluacion.service.TaskService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
-import org.springframework.security.access.AccessDeniedException;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/teacher/courses")
 @PreAuthorize("hasRole('Teacher')")
 public class TeacherCourseController {
 
-    private final CourseService courseService;
-    private final EnrollmentService enrollmentService;
-    private final TaskService taskService;
+    private final AwsLambdaClient lambda;
+    private final AwsSnsClient sns;
 
-    public TeacherCourseController(CourseService courseService,
-                                   EnrollmentService enrollmentService,
-                                   TaskService taskService) {
-        this.courseService = courseService;
-        this.enrollmentService = enrollmentService;
-        this.taskService = taskService;
+    public TeacherCourseController(AwsLambdaClient lambda, AwsSnsClient sns) {
+        this.lambda = lambda;
+        this.sns = sns;
     }
 
     @GetMapping
-    public List<CourseResponse> myCourses(@AuthenticationPrincipal Jwt jwt) {
-        return courseService.findForTeacher(identity(jwt)).stream()
-                .map(CourseResponse::from).toList();
+    public ResponseEntity<String> myCourses(@AuthenticationPrincipal Jwt jwt) {
+        return lambda.invoke("lambda-course-service", Map.of("action", "TEACHER_GET_COURSES", "teacherId", identity(jwt)));
     }
 
     @GetMapping("/{id}/students")
-    public List<EnrollmentResponse> students(@PathVariable Long id, @AuthenticationPrincipal Jwt jwt) {
-        assertOwnership(id, jwt);
-        return enrollmentService.findByCourse(id).stream().map(EnrollmentResponse::from).toList();
+    public ResponseEntity<String> students(@PathVariable Long id, @AuthenticationPrincipal Jwt jwt) {
+        return lambda.invoke("lambda-enrollment-service", Map.of("action", "TEACHER_GET_STUDENTS", "courseId", id, "teacherId", identity(jwt)));
     }
 
     @PostMapping("/{id}/enrollments")
-    @ResponseStatus(HttpStatus.CREATED)
-    public EnrollmentResponse enroll(@PathVariable Long id,
-                                     @Valid @RequestBody EnrollStudentRequest req,
-                                     @AuthenticationPrincipal Jwt jwt) {
-        assertOwnership(id, jwt);
-        return EnrollmentResponse.from(enrollmentService.enroll(id, req.studentId()));
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public ResponseEntity<String> enroll(@PathVariable Long id, @Valid @RequestBody EnrollStudentRequest req, @AuthenticationPrincipal Jwt jwt) {
+        sns.publishEvent("TEACHER_ENROLL_STUDENT", Map.of(
+            "courseId", id, 
+            "studentId", req.studentId(), 
+            "teacherId", identity(jwt)
+        ));
+        return ResponseEntity.accepted().body("{\"message\":\"Enrollment initiated\"}");
     }
 
     @GetMapping("/{id}/tasks")
-    public List<TaskResponse> tasks(@PathVariable Long id, @AuthenticationPrincipal Jwt jwt) {
-        assertOwnership(id, jwt);
-        return taskService.findByCourse(id).stream().map(TaskResponse::from).toList();
+    public ResponseEntity<String> tasks(@PathVariable Long id, @AuthenticationPrincipal Jwt jwt) {
+        return lambda.invoke("lambda-task-service", Map.of("action", "TEACHER_GET_TASKS", "courseId", id, "teacherId", identity(jwt)));
     }
 
     @PostMapping("/{id}/tasks")
-    @ResponseStatus(HttpStatus.CREATED)
-    public TaskResponse createTask(@PathVariable Long id,
-                                   @Valid @RequestBody CreateTaskRequest req,
-                                   @AuthenticationPrincipal Jwt jwt) {
-        assertOwnership(id, jwt);
-        return TaskResponse.from(taskService.create(id, req));
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public ResponseEntity<String> createTask(@PathVariable Long id, @Valid @RequestBody CreateTaskRequest req, @AuthenticationPrincipal Jwt jwt) {
+        sns.publishEvent("TEACHER_CREATE_TASK", Map.of(
+            "courseId", id,
+            "data", req,
+            "teacherId", identity(jwt)
+        ));
+        return ResponseEntity.accepted().body("{\"message\":\"Task creation initiated\"}");
     }
 
-    private void assertOwnership(Long courseId, Jwt jwt) {
-        Course c = courseService.findById(courseId);
-        if (!c.getTeacherId().equals(identity(jwt))) {
-            throw new AccessDeniedException("You are not the owner of this course");
-        }
-    }
-
-    /** identity = email claim if present, else the sub. */
     static String identity(Jwt jwt) {
         String email = jwt.getClaimAsString("email");
         return email != null ? email : jwt.getSubject();

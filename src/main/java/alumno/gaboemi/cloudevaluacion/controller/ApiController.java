@@ -16,7 +16,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
 @RestController
-@RequestMapping("/api")
+@RequestMapping
 public class ApiController {
 	@GetMapping("/health")
 	public ResponseEntity<MessageDto> getHealth() {
@@ -28,13 +28,13 @@ public class ApiController {
 		}
 	}
 
-	@GetMapping("/me")
-    public MeResponse me(@AuthenticationPrincipal Jwt jwt) {
-        List<String> roles = jwt.getClaimAsStringList("cognito:groups");
-        return new MeResponse(
-                jwt.getSubject(),
-                jwt.getClaimAsString("email"),
-                roles == null ? List.of() : roles
-        );
-    }
+	@GetMapping("/api/me")
+	public MeResponse me(@AuthenticationPrincipal Jwt jwt) {
+		List<String> roles = jwt.getClaimAsStringList("cognito:groups");
+		return new MeResponse(
+				jwt.getSubject(),
+				jwt.getClaimAsString("email"),
+				roles == null ? List.of() : roles
+		);
+	}
 }
