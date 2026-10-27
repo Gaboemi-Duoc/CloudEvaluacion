@@ -99,6 +99,7 @@ jobs:
                 --name ${{ env.CONTAINER_NAME }} \
                 -p 80:8080 \
                 -e PORT=8080 \
+                -e SNS_TOPIC_ARN='${{ secrets.SNS_TOPIC_ARN }}' \
                 -e PUBLIC_HOST_URL='http://$TARGET_HOST_IP' \
                 -e API_GATEWAY_SECRET='${{ secrets.API_GATEWAY_SECRET }}' \
                 -e COGNITO_ISSUER_URI='${{ secrets.COGNITO_ISSUER_URI }}' \
