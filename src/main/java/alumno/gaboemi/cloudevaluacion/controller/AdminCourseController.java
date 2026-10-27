@@ -1,63 +1,57 @@
 package alumno.gaboemi.cloudevaluacion.controller;
 
+import alumno.gaboemi.cloudevaluacion.client.AwsLambdaClient;
 import alumno.gaboemi.cloudevaluacion.dto.*;
-import alumno.gaboemi.cloudevaluacion.service.CourseService;
-import alumno.gaboemi.cloudevaluacion.service.EnrollmentService;
 import jakarta.validation.Valid;
-import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/admin/courses")
 @PreAuthorize("hasRole('Admin')")
 public class AdminCourseController {
 
-	private final CourseService courseService;
-	private final EnrollmentService enrollmentService;
+    private final AwsLambdaClient lambda;
 
-	public AdminCourseController(CourseService courseService, EnrollmentService enrollmentService) {
-		this.courseService = courseService;
-		this.enrollmentService = enrollmentService;
-	}
+    public AdminCourseController(AwsLambdaClient lambda) {
+        this.lambda = lambda;
+    }
 
-	@GetMapping
-	public List<CourseResponse> list() {
-		return courseService.findAll().stream().map(CourseResponse::from).toList();
-	}
+    @GetMapping
+    public ResponseEntity<String> list() {
+        return lambda.invoke("Lambda-course-service", Map.of("action", "ADMIN_LIST_COURSES"));
+    }
 
-	@GetMapping("/{id}")
-	public CourseResponse get(@PathVariable Long id) {
-		return CourseResponse.from(courseService.findById(id));
-	}
+    @GetMapping("/{id}")
+    public ResponseEntity<String> get(@PathVariable Long id) {
+        return lambda.invoke("Lambda-course-service", Map.of("action", "ADMIN_GET_COURSE", "courseId", id));
+    }
 
-	@PostMapping
-	@ResponseStatus(HttpStatus.CREATED)
-	public CourseResponse create(@Valid @RequestBody CreateCourseRequest req) {
-		return CourseResponse.from(courseService.create(req));
-	}
+    @PostMapping
+    public ResponseEntity<String> create(@Valid @RequestBody CreateCourseRequest req) {
+        return lambda.invoke("Lambda-course-service", Map.of("action", "ADMIN_CREATE_COURSE", "data", req));
+    }
 
-	@PutMapping("/{id}/teacher")
-	public CourseResponse assignTeacher(@PathVariable Long id, @Valid @RequestBody AssignTeacherRequest req) {
-		return CourseResponse.from(courseService.assignTeacher(id, req.teacherId()));
-	}
+    @PutMapping("/{id}/teacher")
+    public ResponseEntity<String> assignTeacher(@PathVariable Long id, @Valid @RequestBody AssignTeacherRequest req) {
+        return lambda.invoke("Lambda-course-service", Map.of("action", "ADMIN_ASSIGN_TEACHER", "courseId", id, "teacherId", req.teacherId()));
+    }
 
-	@DeleteMapping("/{id}")
-	@ResponseStatus(HttpStatus.NO_CONTENT)
-	public void delete(@PathVariable Long id) {
-		courseService.delete(id);
-	}
+    @DeleteMapping("/{id}")
+    public ResponseEntity<String> delete(@PathVariable Long id) {
+        return lambda.invoke("Lambda-course-service", Map.of("action", "ADMIN_DELETE_COURSE", "courseId", id));
+    }
 
-	@PostMapping("/{id}/enrollments")
-	@ResponseStatus(HttpStatus.CREATED)
-	public EnrollmentResponse enroll(@PathVariable Long id, @Valid @RequestBody EnrollStudentRequest req) {
-		return EnrollmentResponse.from(enrollmentService.enroll(id, req.studentId()));
-	}
+    @PostMapping("/{id}/enrollments")
+    public ResponseEntity<String> enroll(@PathVariable Long id, @Valid @RequestBody EnrollStudentRequest req) {
+        return lambda.invoke("Lambda-enrollment-service", Map.of("action", "ADMIN_ENROLL_STUDENT", "courseId", id, "studentId", req.studentId()));
+    }
 
-	@GetMapping("/{id}/students")
-	public List<EnrollmentResponse> students(@PathVariable Long id) {
-		return enrollmentService.findByCourse(id).stream().map(EnrollmentResponse::from).toList();
-	}
+    @GetMapping("/{id}/students")
+    public ResponseEntity<String> students(@PathVariable Long id) {
+        return lambda.invoke("Lambda-enrollment-service", Map.of("action", "ADMIN_GET_STUDENTS", "courseId", id));
+    }
 }

@@ -1,5 +1,0 @@
-package alumno.gaboemi.cloudevaluacion.exception;
-
-public class NotFoundException extends RuntimeException {
-    public NotFoundException(String message) { super(message); }
-}
