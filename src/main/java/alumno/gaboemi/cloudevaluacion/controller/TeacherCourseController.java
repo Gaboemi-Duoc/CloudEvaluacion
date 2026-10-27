@@ -25,12 +25,12 @@ public class TeacherCourseController {
 
     @GetMapping
     public ResponseEntity<String> myCourses(@AuthenticationPrincipal Jwt jwt) {
-        return lambda.invoke("Lambda-course-service", Map.of("action", "TEACHER_GET_COURSES", "teacherId", identity(jwt)));
+        return lambda.invoke("lambda-course-service", Map.of("action", "TEACHER_GET_COURSES", "teacherId", identity(jwt)));
     }
 
     @GetMapping("/{id}/students")
     public ResponseEntity<String> students(@PathVariable Long id, @AuthenticationPrincipal Jwt jwt) {
-        return lambda.invoke("Lambda-enrollment-service", Map.of("action", "TEACHER_GET_STUDENTS", "courseId", id, "teacherId", identity(jwt)));
+        return lambda.invoke("lambda-enrollment-service", Map.of("action", "TEACHER_GET_STUDENTS", "courseId", id, "teacherId", identity(jwt)));
     }
 
     @PostMapping("/{id}/enrollments")
@@ -40,12 +40,12 @@ public class TeacherCourseController {
         payload.put("courseId", id);
         payload.put("studentId", req.studentId());
         payload.put("teacherId", identity(jwt));
-        return lambda.invoke("Lambda-enrollment-service", payload);
+        return lambda.invoke("lambda-enrollment-service", payload);
     }
 
     @GetMapping("/{id}/tasks")
     public ResponseEntity<String> tasks(@PathVariable Long id, @AuthenticationPrincipal Jwt jwt) {
-        return lambda.invoke("Lambda-task-service", Map.of("action", "TEACHER_GET_TASKS", "courseId", id, "teacherId", identity(jwt)));
+        return lambda.invoke("lambda-task-service", Map.of("action", "TEACHER_GET_TASKS", "courseId", id, "teacherId", identity(jwt)));
     }
 
     @PostMapping("/{id}/tasks")
@@ -55,7 +55,7 @@ public class TeacherCourseController {
         payload.put("courseId", id);
         payload.put("data", req);
         payload.put("teacherId", identity(jwt));
-        return lambda.invoke("Lambda-task-service", payload);
+        return lambda.invoke("lambda-task-service", payload);
     }
 
     static String identity(Jwt jwt) {

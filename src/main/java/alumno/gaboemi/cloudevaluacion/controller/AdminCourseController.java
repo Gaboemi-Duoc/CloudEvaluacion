@@ -22,36 +22,36 @@ public class AdminCourseController {
 
     @GetMapping
     public ResponseEntity<String> list() {
-        return lambda.invoke("Lambda-course-service", Map.of("action", "ADMIN_LIST_COURSES"));
+        return lambda.invoke("lambda-course-service", Map.of("action", "ADMIN_LIST_COURSES"));
     }
 
     @GetMapping("/{id}")
     public ResponseEntity<String> get(@PathVariable Long id) {
-        return lambda.invoke("Lambda-course-service", Map.of("action", "ADMIN_GET_COURSE", "courseId", id));
+        return lambda.invoke("lambda-course-service", Map.of("action", "ADMIN_GET_COURSE", "courseId", id));
     }
 
     @PostMapping
     public ResponseEntity<String> create(@Valid @RequestBody CreateCourseRequest req) {
-        return lambda.invoke("Lambda-course-service", Map.of("action", "ADMIN_CREATE_COURSE", "data", req));
+        return lambda.invoke("lambda-course-service", Map.of("action", "ADMIN_CREATE_COURSE", "data", req));
     }
 
     @PutMapping("/{id}/teacher")
     public ResponseEntity<String> assignTeacher(@PathVariable Long id, @Valid @RequestBody AssignTeacherRequest req) {
-        return lambda.invoke("Lambda-course-service", Map.of("action", "ADMIN_ASSIGN_TEACHER", "courseId", id, "teacherId", req.teacherId()));
+        return lambda.invoke("lambda-course-service", Map.of("action", "ADMIN_ASSIGN_TEACHER", "courseId", id, "teacherId", req.teacherId()));
     }
 
     @DeleteMapping("/{id}")
     public ResponseEntity<String> delete(@PathVariable Long id) {
-        return lambda.invoke("Lambda-course-service", Map.of("action", "ADMIN_DELETE_COURSE", "courseId", id));
+        return lambda.invoke("lambda-course-service", Map.of("action", "ADMIN_DELETE_COURSE", "courseId", id));
     }
 
     @PostMapping("/{id}/enrollments")
     public ResponseEntity<String> enroll(@PathVariable Long id, @Valid @RequestBody EnrollStudentRequest req) {
-        return lambda.invoke("Lambda-enrollment-service", Map.of("action", "ADMIN_ENROLL_STUDENT", "courseId", id, "studentId", req.studentId()));
+        return lambda.invoke("lambda-enrollment-service", Map.of("action", "ADMIN_ENROLL_STUDENT", "courseId", id, "studentId", req.studentId()));
     }
 
     @GetMapping("/{id}/students")
     public ResponseEntity<String> students(@PathVariable Long id) {
-        return lambda.invoke("Lambda-enrollment-service", Map.of("action", "ADMIN_GET_STUDENTS", "courseId", id));
+        return lambda.invoke("lambda-enrollment-service", Map.of("action", "ADMIN_GET_STUDENTS", "courseId", id));
     }
 }

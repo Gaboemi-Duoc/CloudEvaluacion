@@ -22,26 +22,26 @@ public class StudentController {
 
     @GetMapping("/courses")
     public ResponseEntity<String> myCourses(@AuthenticationPrincipal Jwt jwt) {
-        return lambda.invoke("Lambda-enrollment-service", Map.of("action", "STUDENT_GET_COURSES", "studentId", TeacherCourseController.identity(jwt)));
+        return lambda.invoke("lambda-enrollment-service", Map.of("action", "STUDENT_GET_COURSES", "studentId", TeacherCourseController.identity(jwt)));
     }
 
     @GetMapping("/courses/available")
     public ResponseEntity<String> available(@AuthenticationPrincipal Jwt jwt) {
-        return lambda.invoke("Lambda-course-service", Map.of("action", "STUDENT_GET_AVAILABLE", "studentId", TeacherCourseController.identity(jwt)));
+        return lambda.invoke("lambda-course-service", Map.of("action", "STUDENT_GET_AVAILABLE", "studentId", TeacherCourseController.identity(jwt)));
     }
 
     @PostMapping("/courses/{id}/enroll")
     public ResponseEntity<String> enroll(@PathVariable Long id, @AuthenticationPrincipal Jwt jwt) {
-        return lambda.invoke("Lambda-enrollment-service", Map.of("action", "STUDENT_ENROLL", "courseId", id, "studentId", TeacherCourseController.identity(jwt)));
+        return lambda.invoke("lambda-enrollment-service", Map.of("action", "STUDENT_ENROLL", "courseId", id, "studentId", TeacherCourseController.identity(jwt)));
     }
 
     @GetMapping("/courses/{id}/tasks")
     public ResponseEntity<String> tasksOfCourse(@PathVariable Long id, @AuthenticationPrincipal Jwt jwt) {
-        return lambda.invoke("Lambda-task-service", Map.of("action", "STUDENT_GET_COURSE_TASKS", "courseId", id, "studentId", TeacherCourseController.identity(jwt)));
+        return lambda.invoke("lambda-task-service", Map.of("action", "STUDENT_GET_COURSE_TASKS", "courseId", id, "studentId", TeacherCourseController.identity(jwt)));
     }
 
     @GetMapping("/tasks")
     public ResponseEntity<String> myTasks(@AuthenticationPrincipal Jwt jwt) {
-        return lambda.invoke("Lambda-task-service", Map.of("action", "STUDENT_GET_TASKS", "studentId", TeacherCourseController.identity(jwt)));
+        return lambda.invoke("lambda-task-service", Map.of("action", "STUDENT_GET_TASKS", "studentId", TeacherCourseController.identity(jwt)));
     }
 }
