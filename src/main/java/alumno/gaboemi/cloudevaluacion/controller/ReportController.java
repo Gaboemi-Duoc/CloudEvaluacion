@@ -1,6 +1,7 @@
 package alumno.gaboemi.cloudevaluacion.controller;
 
-import alumno.gaboemi.cloudevaluacion.client.AwsLambdaClient;
+import alumno.gaboemi.cloudevaluacion.client.AwsSnsClient;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
@@ -12,14 +13,16 @@ import java.util.Map;
 @PreAuthorize("hasRole('Admin')")
 public class ReportController {
 
-    private final AwsLambdaClient lambda;
+    private final AwsSnsClient sns;
 
-    public ReportController(AwsLambdaClient lambda) {
-        this.lambda = lambda;
+    public ReportController(AwsSnsClient sns) {
+        this.sns = sns;
     }
 
     @PostMapping("/generate")
+    @ResponseStatus(HttpStatus.ACCEPTED)
     public ResponseEntity<String> generateReport() {
-        return lambda.invoke("lambda-report-generator", Map.of("action", "GENERATE_REPORT"));
+        sns.publishEvent("GENERATE_REPORT", Map.of());
+        return ResponseEntity.accepted().body("{\"message\":\"Report generation initiated\"}");
     }
 }

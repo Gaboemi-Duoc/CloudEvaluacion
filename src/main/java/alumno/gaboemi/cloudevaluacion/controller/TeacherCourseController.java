@@ -1,8 +1,10 @@
 package alumno.gaboemi.cloudevaluacion.controller;
 
 import alumno.gaboemi.cloudevaluacion.client.AwsLambdaClient;
+import alumno.gaboemi.cloudevaluacion.client.AwsSnsClient;
 import alumno.gaboemi.cloudevaluacion.dto.*;
 import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -18,9 +20,11 @@ import java.util.Map;
 public class TeacherCourseController {
 
     private final AwsLambdaClient lambda;
+    private final AwsSnsClient sns;
 
-    public TeacherCourseController(AwsLambdaClient lambda) {
+    public TeacherCourseController(AwsLambdaClient lambda, AwsSnsClient sns) {
         this.lambda = lambda;
+        this.sns = sns;
     }
 
     @GetMapping
@@ -34,13 +38,14 @@ public class TeacherCourseController {
     }
 
     @PostMapping("/{id}/enrollments")
+    @ResponseStatus(HttpStatus.ACCEPTED)
     public ResponseEntity<String> enroll(@PathVariable Long id, @Valid @RequestBody EnrollStudentRequest req, @AuthenticationPrincipal Jwt jwt) {
-        Map<String, Object> payload = new HashMap<>();
-        payload.put("action", "TEACHER_ENROLL_STUDENT");
-        payload.put("courseId", id);
-        payload.put("studentId", req.studentId());
-        payload.put("teacherId", identity(jwt));
-        return lambda.invoke("lambda-enrollment-service", payload);
+        sns.publishEvent("TEACHER_ENROLL_STUDENT", Map.of(
+            "courseId", id, 
+            "studentId", req.studentId(), 
+            "teacherId", identity(jwt)
+        ));
+        return ResponseEntity.accepted().body("{\"message\":\"Enrollment initiated\"}");
     }
 
     @GetMapping("/{id}/tasks")
@@ -49,13 +54,14 @@ public class TeacherCourseController {
     }
 
     @PostMapping("/{id}/tasks")
+    @ResponseStatus(HttpStatus.ACCEPTED)
     public ResponseEntity<String> createTask(@PathVariable Long id, @Valid @RequestBody CreateTaskRequest req, @AuthenticationPrincipal Jwt jwt) {
-        Map<String, Object> payload = new HashMap<>();
-        payload.put("action", "TEACHER_CREATE_TASK");
-        payload.put("courseId", id);
-        payload.put("data", req);
-        payload.put("teacherId", identity(jwt));
-        return lambda.invoke("lambda-task-service", payload);
+        sns.publishEvent("TEACHER_CREATE_TASK", Map.of(
+            "courseId", id,
+            "data", req,
+            "teacherId", identity(jwt)
+        ));
+        return ResponseEntity.accepted().body("{\"message\":\"Task creation initiated\"}");
     }
 
     static String identity(Jwt jwt) {
