@@ -1,38 +1,27 @@
-# CloudEvaluacion - Backend Spring Boot
+# CloudEvaluacion - Backend BFF (Spring Boot)
 
-Backend del sistema **Pedidos360 / CloudEvaluacion** para la asignatura **DSY1107 Desarrollo Cloud Native**. Expone una API REST protegida con **AWS Cognito** (IDaaS) y validacion por **JWT**, persistencia en **PostgreSQL** (Supabase), y despliegue automatizado en **AWS EC2** a traves de **GitHub Container Registry (GHCR)** y **AWS API Gateway**.
+Backend **BFF (Backend For Frontend)** del sistema **CloudEvaluacion** para la asignatura **DSY1107 Desarrollo Cloud Native**. Expone una API REST protegida con **AWS Cognito** (IDaaS) y validación por **JWT**, actúa como **productor de eventos** hacia **AWS SNS** y como **cliente de invocación síncrona** de **AWS Lambda**, y delega la persistencia en **Supabase (PostgreSQL)** a través de los microservicios serverless.
 
----
-
-## Tabla de contenidos
-
-1. [Descripcion](#descripcion)
-2. [Arquitectura](#arquitectura)
-3. [Stack tecnologico](#stack-tecnologico)
-4. [Estructura del proyecto](#estructura-del-proyecto)
-5. [Requisitos previos](#requisitos-previos)
-6. [Configuracion](#configuracion)
-7. [Ejecucion local](#ejecucion-local)
-8. [Endpoints de la API](#endpoints-de-la-api)
-9. [Autenticacion y autorizacion](#autenticacion-y-autorizacion)
-10. [Base de datos](#base-de-datos)
-11. [Despliegue](#despliegue)
-12. [Pruebas](#pruebas)
-13. [Seguridad](#seguridad)
+> **Nota:** Este repositorio contiene **solo el BFF**. Los consumidores (Lambda functions), las colas (SQS) se documentan en el repositorio [`CloudLambda`](https://github.com/gaboemi-duoc/CloudLambda). El frontend se documenta en [`CloudFrontend`](https://github.com/gaboemi-duoc/CloudFrontend).
 
 ---
 
-## Descripcion
+## Descripción
 
-El backend implementa la logica de negocio de un sistema de gestion academica con tres roles:
+El backend implementa la lógica de negocio de un sistema de gestión académica con tres roles:
 
 | Rol | Responsabilidades |
 |---|---|
-| **ADMIN** | Crear cursos, asignar profesores, inscribir y eliminar alumnos |
+| **ADMIN** | Crear cursos, asignar profesores, inscribir y eliminar alumnos, generar reportes |
 | **TEACHER** | Ver sus cursos, gestionar alumnos inscritos, crear tareas |
 | **STUDENT** | Ver cursos inscritos, auto-inscribirse, ver tareas asignadas |
 
-El sistema **no gestiona el login**: delega la autenticacion a **AWS Cognito**. El backend solo valida el JWT que recibe en cada peticion y extrae la identidad y los roles desde los claims del token.
+El sistema **no gestiona el login**: delega la autenticación a **AWS Cognito**. El backend solo valida el JWT que recibe en cada petición y extrae la identidad y los roles desde los claims del token.
+
+El BFF cumple dos roles de integración con la capa serverless:
+
+- **Productor de eventos (asíncrono)**: publica comandos en **AWS SNS** para operaciones de escritura (crear curso, inscribir alumno, crear tarea, generar reporte). El BFF responde **`202 Accepted`** de inmediato y el procesamiento real ocurre en las Lambdas consumidoras de **SQS**.
+- **Cliente de lectura (síncrono)**: invoca directamente funciones **AWS Lambda** para consultas (listar cursos, obtener alumnos, listar tareas), obteniendo la respuesta en el mismo request.
 
 ---
 
@@ -41,37 +30,130 @@ El sistema **no gestiona el login**: delega la autenticacion a **AWS Cognito**. 
 ```
 +--------------+    HTTPS     +--------------+    HTTP     +------------------+
 |              |------------->|              |------------>|                  |
-|  Angular/    |  Bearer JWT  | AWS API      |  + header   |  EC2             |
-|  React SPA   |              | Gateway      |  X-Secret-  |  +------------+  |
-|  (Vercel)    |<-------------| (HTTP API)   |  Gateway    |  | Spring Boot|  |
-|              |              |              |             |  | (Docker)   |  |
+|  React SPA   |  Bearer JWT  | AWS API      |  + header   |  EC2             |
+|  (Vercel)    |              | Gateway      |  X-Secret-  |  +------------+  |
+|              |<-------------| (HTTP API)   |  Gateway    |  | Spring Boot|  |
+|              |              |              |             |  | BFF (Docker)|  |
 +--------------+              +--------------+             |  +-----+------+  |
        |                                                     +--------+--------+
        |                                                              |
-       |  Authorization Code + PKCE                                   | JDBC/TLS
-       v                                                              v
-+--------------+                                            +------------------+
-| AWS Cognito  |                                            |  PostgreSQL      |
-| (User Pool)  |                                            |  (Supabase)      |
-+--------------+                                            +------------------+
+       |  Authorization Code                                          |
+       v                                                              |
++--------------+                                                      |
+| AWS Cognito  |                                                      |
+| (User Pool)  |                                                      |
++--------------+                                                      |
+                                                                      |
+                                        +-----------------------------+
+                                        |
+                                        | (Asíncrono)
+                                        v
+                               +------------------+
+                               |    AWS SNS       |
+                               |  (Topic:         |
+                               | CloudStudyEvents)|
+                               +--------+---------+
+                                        |
+                                        | Filter Policy
+                                        v
+                               +------------------+
+                               |    AWS SQS       |
+                               |  DbWriteQueue    |
+                               |  NotificationQueue|
+                               +--------+---------+
+                                        |
+                                        | (max 5 reintentos)
+                                        v
+                               +------------------+                            +------------------+
+                               |   AWS Lambda     |                            |   Notification   |
+                               |  (Consumer)      |--------------------------->|       API        |
+                               +--------+---------+                            +--------+---------+
+                                        |
+                                        |
+                                        v
+     +--------------------------------------------------+
+     |              Supabase (PostgreSQL)               |
+     +--------------------------------------------------+
 ```
 
-Flujo de una peticion:
+### Flujo de una petición
 
 1. El frontend obtiene un **`id_token`** de Cognito mediante el flujo Authorization Code + PKCE.
-2. Envia la peticion a API Gateway con `Authorization: Bearer <id_token>`.
-3. API Gateway inyecta el header `X-Secret-Gateway` (desde una variable de stage) y reenvia a EC2.
+2. Envía la petición a API Gateway con `Authorization: Bearer <id_token>`.
+3. API Gateway inyecta el header `X-Secret-Gateway` (desde una variable de stage) y reenvía a EC2.
 4. Spring Boot verifica en orden:
    - **`SecretGatewayFilter`**: rechaza con 403 si falta `X-Secret-Gateway`.
-   - **`BearerTokenAuthenticationFilter`**: valida la firma del JWT contra el JWKS de Cognito, el issuer y la expiracion.
+   - **`BearerTokenAuthenticationFilter`**: valida la firma del JWT contra el JWKS de Cognito, el issuer y la expiración.
    - **`CognitoJwtAuthenticationConverter`**: traduce `cognito:groups` a authorities `ROLE_*`.
-   - **`@PreAuthorize`** en el controlador: autoriza segun el rol.
+   - **`@PreAuthorize`** en el controlador: autoriza según el rol.
+5. Según el verbo HTTP:
+   - **GET** → invocación síncrona a **Lambda** (lectura) → respuesta inmediata.
+   - **POST / PUT / DELETE** → publicación en **SNS** (escritura) → respuesta **`202 Accepted`**.
 
 ---
 
-## Stack tecnologico
+## Patrón de mensajería asíncrona (EP3)
 
-| Componente | Version |
+El BFF implementa el rol de **productor** dentro de una arquitectura **orientada a eventos** basada en servicios gestionados de AWS. La mensajería desacoplada permite que las operaciones de escritura no bloqueen al cliente y que cada microservicio consuma únicamente los eventos que le competen.
+
+### Equivalencias conceptuales (mensajería → AWS)
+
+| Concepto de mensajería | Implementación AWS |
+|---|---|
+| **Exchange** | **AWS SNS Topic** (`CloudStudyEvents`) |
+| **Queue** | **AWS SQS** (`DbWriteQueue`, `NotificationQueue`) |
+| **Binding** | Suscripción SNS con **Filter Policy** por atributo `action` |
+| **Producer** | **Este BFF** (`AwsSnsClient`) |
+| **Consumer** | **AWS Lambda** (repositorio `CloudLambda`) |
+
+
+### Clases responsables
+
+| Clase | Rol en la arquitectura |
+|---|---|
+| `AwsSnsClient` | **Productor**. Serializa el evento a JSON, lo publica en el topic SNS con atributos para el enrutamiento por *filter policy*. |
+| `AwsLambdaClient` | **Cliente síncrono**. Invoca funciones Lambda de lectura y mapea la respuesta (`statusCode`, `body`) a un `ResponseEntity`. |
+| `AdminCourseController`, `TeacherCourseController`, `StudentController`, `ReportController` | **Puntos de entrada**. Delegan en `AwsSnsClient` (escrituras) o `AwsLambdaClient` (lecturas). |
+
+### Contrato de eventos
+
+Cada evento publicado en SNS sigue el formato:
+
+```json
+{
+  "action": "ADMIN_CREATE_COURSE",
+  "data": { "...": "..." }
+}
+```
+
+Adicionalmente, el atributo de mensaje `action` se envía como **MessageAttribute** (`DataType=String`), lo que permite a SQS aplicar **filter policies** para enrutar el evento únicamente a las colas interesadas:
+
+| `action` | Cola destino | Lambda consumidora |
+|---|---|---|
+| `ADMIN_CREATE_COURSE` | `DbWriteQueue` | `lambda-course-service` |
+| `ADMIN_ASSIGN_TEACHER` | `DbWriteQueue` | `lambda-course-service` |
+| `ADMIN_DELETE_COURSE` | `DbWriteQueue` | `lambda-course-service` |
+| `ADMIN_ENROLL_STUDENT` | `DbWriteQueue` | `lambda-enrollment-service` |
+| `TEACHER_ENROLL_STUDENT` | `DbWriteQueue` | `lambda-enrollment-service` |
+| `TEACHER_CREATE_TASK` | `DbWriteQueue` | `lambda-task-service` |
+| `STUDENT_ENROLL` | `DbWriteQueue` | `lambda-enrollment-service` |
+| `GENERATE_REPORT` | `DbWriteQueue` + `NotificationQueue` | `lambda-report-generator` + `lambda-notification-worker` |
+
+### Operaciones asíncronas expuestas al frontend
+
+Los endpoints de escritura responden con **`202 Accepted`** y un cuerpo informativo:
+
+```json
+{ "message": "Course creation initiated" }
+```
+
+El frontend está preparado para este patrón mediante **actualizaciones optimistas** y temporizadores de recarga (`setTimeout`) que sincronizan la vista una vez que la Lambda ha persistido el cambio en Supabase. Para más detalle, ver el README del frontend.
+
+---
+
+## Stack tecnológico
+
+| Componente | Versión |
 |---|---|
 | Java | 21 |
 | Spring Boot | 4.1.1 |
@@ -79,18 +161,22 @@ Flujo de una peticion:
 | Spring Data JPA | (incluido) |
 | Hibernate | 7.x |
 | PostgreSQL | 16+ (Supabase) |
-| Docker | Ultima estable |
+| AWS SDK for Java v2 | `lambda`, `sns` |
+| Docker | Última estable |
 | Gradle | Wrapper incluido |
 
 Dependencias clave:
 
 - `spring-boot-starter-security`: filtros de seguridad
-- `spring-boot-starter-security-oauth2-resource-server`: validacion de JWT
+- `spring-boot-starter-security-oauth2-resource-server`: validación de JWT
 - `spring-boot-starter-webmvc`: API REST
 - `spring-boot-starter-data-jpa`: persistencia
-- `spring-boot-starter-validation`: validacion de DTOs
+- `spring-boot-starter-validation`: validación de DTOs
+- `software.amazon.awssdk:lambda`: invocación síncrona de funciones
+- `software.amazon.awssdk:sns`: publicación de eventos asíncronos
 - `org.postgresql:postgresql`: driver JDBC
-- `org.projectlombok:lombok`: reduccion de boilerplate
+- `org.projectlombok:lombok`: reducción de boilerplate
+- `tools.jackson:jackson-databind` (Jackson 3): serialización JSON
 
 ---
 
@@ -99,42 +185,30 @@ Dependencias clave:
 ```
 src/main/java/alumno/gaboemi/cloudevaluacion/
 ├── CloudEvaluacionApplication.java
+├── client/
+│   ├── AwsLambdaClient.java        # Invocación síncrona a Lambda
+│   └── AwsSnsClient.java           # Productor de eventos hacia SNS
 ├── config/
 │   ├── SecurityConfig.java
 │   └── SecretGatewayFilter.java
 ├── security/
 │   └── CognitoJwtAuthenticationConverter.java
-├── domain/
-│   ├── Course.java
-│   ├── Enrollment.java
-│   └── Task.java
-├── repository/
-│   ├── CourseRepository.java
-│   ├── EnrollmentRepository.java
-│   └── TaskRepository.java
-├── dto/
-│   ├── CourseResponse.java
-│   ├── CreateCourseRequest.java
-│   ├── AssignTeacherRequest.java
-│   ├── TaskResponse.java
-│   ├── CreateTaskRequest.java
-│   ├── EnrollmentResponse.java
-│   ├── EnrollStudentRequest.java
-│   └── MeResponse.java
-├── service/
-│   ├── CourseService.java
-│   ├── EnrollmentService.java
-│   └── TaskService.java
 ├── controller/
-│   ├── HealthController.java
-│   ├── MeController.java
+│   ├── ApiController.java          # /health, /api/me
 │   ├── AdminCourseController.java
 │   ├── TeacherCourseController.java
-│   └── StudentController.java
-└── exception/
-    ├── NotFoundException.java
-    └── GlobalExceptionHandler.java
+│   ├── StudentController.java
+│   └── ReportController.java
+└── dto/
+    ├── AssignTeacherRequest.java
+    ├── CreateCourseRequest.java
+    ├── CreateTaskRequest.java
+    ├── EnrollStudentRequest.java
+    ├── MeResponse.java
+    └── MessageDto.java
 ```
+
+> La persistencia (entidades, repositorios y servicios) vive en los microservicios serverless del repositorio `CloudLambda`. El BFF **no** accede directamente a PostgreSQL en este patrón: delega en Lambda.
 
 ---
 
@@ -142,31 +216,31 @@ src/main/java/alumno/gaboemi/cloudevaluacion/
 
 - **JDK 21** ([Temurin](https://adoptium.net/) recomendado)
 - **Docker** (para el despliegue)
-- **PostgreSQL** local o una cuenta de [Supabase](https://supabase.com/)
 - **Cuenta de AWS** con:
   - User Pool de Cognito configurado
   - Instancia EC2 (Amazon Linux 2023)
   - API Gateway HTTP API
+  - Topic SNS (`CloudStudyEvents`) y colas SQS (ver repo `CloudLambda`)
+  - Funciones Lambda desplegadas
 - **Gradle Wrapper** (incluido en el repositorio, no necesitas instalar Gradle)
 
 ---
 
-## Configuracion
+## Configuración
 
-Todas las variables de entorno tienen valores por defecto para desarrollo local, pero en produccion **siempre** deben sobrescribirse.
+Todas las variables de entorno tienen valores por defecto para desarrollo local, pero en producción **siempre** deben sobrescribirse.
 
 ### Variables de entorno
 
-| Variable | Descripcion | Ejemplo |
+| Variable | Descripción | Ejemplo |
 |---|---|---|
 | `PORT` | Puerto del servidor | `8080` |
-| `PUBLIC_HOST_URL` | URL publica del backend | `http://localhost:8080` |
+| `PUBLIC_HOST_URL` | URL pública del backend | `http://localhost:8080` |
 | `API_GATEWAY_SECRET` | Secreto compartido con API Gateway | `wrcUOJQGxFQg4Njl...` |
 | `COGNITO_ISSUER_URI` | Issuer URI del User Pool | `https://cognito-idp.us-east-1.amazonaws.com/us-east-1_NN6vjj3k5` |
-| `DB_URL` | URL JDBC de PostgreSQL | `jdbc:postgresql://...:5432/postgres?sslmode=require` |
-| `DB_USER` | Usuario de la base de datos | `postgres.qhdhulonucuknqpmdcxr` |
-| `DB_PASSWORD` | Password de la base de datos | `********` |
-| `JPA_DDL` | Estrategia DDL de Hibernate | `update` |
+| `SNS_TOPIC_ARN` | ARN del topic SNS de eventos | `arn:aws:sns:us-east-1:123456789012:CloudStudyEvents` |
+| `SNS_ENABLED` | Habilita/deshabilita la publicación en SNS | `true` |
+| `AWS_REGION` | Región de AWS para los clientes SDK | `us-east-1` |
 
 ### `application.properties`
 
@@ -180,20 +254,18 @@ app.gateway.secret=${API_GATEWAY_SECRET:secreto_local}
 # ---------- Cognito (IDaaS) ----------
 spring.security.oauth2.resourceserver.jwt.issuer-uri=${COGNITO_ISSUER_URI:https://cognito-idp.us-east-1.amazonaws.com/us-east-1_NN6vjj3k5}
 
-# ---------- PostgreSQL ----------
-spring.datasource.url=${DB_URL:jdbc:postgresql://localhost:5432/cloudevaluacion}
-spring.datasource.username=${DB_USER:postgres}
-spring.datasource.password=${DB_PASSWORD:postgres}
-spring.jpa.hibernate.ddl-auto=${JPA_DDL:update}
-spring.jpa.open-in-view=false
-spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
+# ---------- Mensajería asíncrona (SNS) ----------
+app.messaging.sns.topic-arn=${SNS_TOPIC_ARN:arn:aws:sns:us-east-1:000000000000:CloudStudyEvents}
+app.messaging.sns.enabled=${SNS_ENABLED:true}
 
 logging.level.org.springframework.security=INFO
 ```
 
+> En local, si no se dispone de credenciales AWS o del topic real, se puede arrancar con `SNS_ENABLED=false` para que `AwsSnsClient` opere en modo *no-op* (registro en logs) y así evitar dependencias externas durante el desarrollo.
+
 ---
 
-## Ejecucion local
+## Ejecución local
 
 ### 1. Clonar el repositorio
 
@@ -202,19 +274,20 @@ git clone https://github.com/gaboemi-duoc/cloudevaluacion.git
 cd cloudevaluacion
 ```
 
-### 2. Levantar PostgreSQL con Docker
+### 2. Configurar credenciales AWS
+
+El SDK de AWS v2 toma las credenciales del **default provider chain**:
 
 ```bash
-docker run -d --name pg-local \
-  -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=cloudevaluacion \
-  -p 5432:5432 \
-  postgres:16
+export AWS_REGION=us-east-1
+export AWS_ACCESS_KEY_ID=...
+export AWS_SECRET_ACCESS_KEY=...
+export SNS_TOPIC_ARN=arn:aws:sns:us-east-1:123456789012:CloudStudyEvents
 ```
 
-O usar Supabase directamente configurando `DB_URL`, `DB_USER` y `DB_PASSWORD`.
+Alternativamente, usar el perfil de AWS CLI: `export AWS_PROFILE=default`.
 
-### 3. Ejecutar la aplicacion
+### 3. Ejecutar la aplicación
 
 ```bash
 ./gradlew bootRun
@@ -226,7 +299,7 @@ En Windows:
 .\gradlew.bat bootRun
 ```
 
-La aplicacion arranca en `http://localhost:8080` con el secreto `secreto_local` por defecto.
+La aplicación arranca en `http://localhost:8080` con el secreto `secreto_local` por defecto.
 
 ### 4. Verificar el arranque
 
@@ -238,7 +311,7 @@ Salida esperada:
 
 ```
 HTTP/1.1 200 OK
-{"status":"UP"}
+{"message":"API is UP","error":null}
 ```
 
 ---
@@ -250,58 +323,64 @@ Todos los endpoints (excepto `/health`) requieren:
 - Header `Authorization: Bearer <id_token>` validado contra Cognito
 - Header `X-Secret-Gateway: <secreto>` validado por `SecretGatewayFilter`
 
-### Publicos
+La columna **Tipo** indica el patrón de integración:
 
-| Metodo | Ruta | Descripcion |
-|---|---|---|
-| `GET` | `/health` | Health check |
+- **Sync**: el BFF invoca Lambda y espera respuesta (200).
+- **Async**: el BFF publica en SNS y responde **`202 Accepted`**.
+
+### Públicos
+
+| Método | Ruta | Tipo | Descripción |
+|---|---|---|---|
+| `GET` | `/health` | Sync | Health check |
 
 ### Identidad
 
-| Metodo | Ruta | Rol | Descripcion |
-|---|---|---|---|
-| `GET` | `/api/me` | Autenticado | Devuelve subject, email y roles del token actual |
+| Método | Ruta | Rol | Tipo | Descripción |
+|---|---|---|---|---|
+| `GET` | `/api/me` | Autenticado | Sync | Devuelve subject, email y roles del token actual |
 
 ### Admin
 
-| Metodo | Ruta | Descripcion |
-|---|---|---|
-| `GET` | `/api/admin/courses` | Lista todos los cursos |
-| `GET` | `/api/admin/courses/{id}` | Obtiene un curso por ID |
-| `POST` | `/api/admin/courses` | Crea un curso y asigna profesor |
-| `PUT` | `/api/admin/courses/{id}/teacher` | Reasigna el profesor del curso |
-| `DELETE` | `/api/admin/courses/{id}` | Elimina un curso |
-| `GET` | `/api/admin/courses/{id}/students` | Lista los alumnos inscritos |
-| `POST` | `/api/admin/courses/{id}/enrollments` | Inscribe a un alumno |
-| `DELETE` | `/api/admin/courses/{id}/enrollments/{eid}` | Elimina a un alumno del curso |
+| Método | Ruta | Tipo | Descripción |
+|---|---|---|---|
+| `GET` | `/api/admin/courses` | Sync | Lista todos los cursos |
+| `GET` | `/api/admin/courses/{id}` | Sync | Obtiene un curso por ID |
+| `POST` | `/api/admin/courses` | **Async** | Crea un curso y asigna profesor |
+| `PUT` | `/api/admin/courses/{id}/teacher` | **Async** | Reasigna el profesor del curso |
+| `DELETE` | `/api/admin/courses/{id}` | **Async** | Elimina un curso |
+| `GET` | `/api/admin/courses/{id}/students` | Sync | Lista los alumnos inscritos |
+| `POST` | `/api/admin/courses/{id}/enrollments` | **Async** | Inscribe a un alumno |
+| `POST` | `/api/admin/reports/generate` | **Async** | Genera un reporte analítico |
 
 ### Teacher
 
-| Metodo | Ruta | Descripcion |
-|---|---|---|
-| `GET` | `/api/teacher/courses` | Lista los cursos asignados al profesor |
-| `GET` | `/api/teacher/courses/{id}/students` | Lista alumnos del curso |
-| `POST` | `/api/teacher/courses/{id}/enrollments` | Inscribe un alumno |
-| `GET` | `/api/teacher/courses/{id}/tasks` | Lista tareas del curso |
-| `POST` | `/api/teacher/courses/{id}/tasks` | Crea una tarea |
+| Método | Ruta | Tipo | Descripción |
+|---|---|---|---|
+| `GET` | `/api/teacher/courses` | Sync | Lista los cursos asignados al profesor |
+| `GET` | `/api/teacher/courses/{id}/students` | Sync | Lista alumnos del curso |
+| `POST` | `/api/teacher/courses/{id}/enrollments` | **Async** | Inscribe un alumno |
+| `GET` | `/api/teacher/courses/{id}/tasks` | Sync | Lista tareas del curso |
+| `POST` | `/api/teacher/courses/{id}/tasks` | **Async** | Crea una tarea |
 
 ### Student
 
-| Metodo | Ruta | Descripcion |
-|---|---|---|
-| `GET` | `/api/student/courses` | Lista cursos inscritos |
-| `GET` | `/api/student/courses/available` | Lista cursos disponibles |
-| `POST` | `/api/student/courses/{id}/enroll` | Auto-inscripcion |
-| `GET` | `/api/student/courses/{id}/tasks` | Tareas de un curso (si esta inscrito) |
-| `GET` | `/api/student/tasks` | Todas las tareas del alumno |
+| Método | Ruta | Tipo | Descripción |
+|---|---|---|---|
+| `GET` | `/api/student/courses` | Sync | Lista cursos inscritos |
+| `GET` | `/api/student/courses/available` | Sync | Lista cursos disponibles |
+| `POST` | `/api/student/courses/{id}/enroll` | **Async** | Auto-inscripción |
+| `GET` | `/api/student/courses/{id}/tasks` | Sync | Tareas de un curso (si está inscrito) |
+| `GET` | `/api/student/tasks` | Sync | Todas las tareas del alumno |
 
 ### Ejemplos
 
-**Crear curso (ADMIN):**
+**Crear curso (ADMIN) — respuesta 202:**
 
 ```bash
 curl -X POST https://<api-gateway>/api/admin/courses \
   -H "Authorization: Bearer $ID_TOKEN" \
+  -H "X-Secret-Gateway: $GATEWAY_SECRET" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Desarrollo Cloud Native",
@@ -310,7 +389,14 @@ curl -X POST https://<api-gateway>/api/admin/courses \
   }'
 ```
 
-**Listar mis cursos (TEACHER):**
+Respuesta:
+
+```json
+HTTP/1.1 202 Accepted
+{ "message": "Course creation initiated" }
+```
+
+**Listar mis cursos (TEACHER) — respuesta 200:**
 
 ```bash
 curl https://<api-gateway>/api/teacher/courses \
@@ -326,9 +412,9 @@ curl https://<api-gateway>/api/me \
 
 ---
 
-## Autenticacion y autorizacion
+## Autenticación y autorización
 
-### Flujo de validacion
+### Flujo de validación
 
 1. **`SecretGatewayFilter`** (antes de Spring Security)
    Compara `X-Secret-Gateway` con `app.gateway.secret`. Si no coincide, responde **403**.
@@ -336,27 +422,27 @@ curl https://<api-gateway>/api/me \
 2. **`BearerTokenAuthenticationFilter`** (Spring Security)
    - Descarga el JWKS de Cognito desde `{issuer-uri}/.well-known/jwks.json`.
    - Verifica la firma RS256 del JWT.
-   - Valida el claim `iss` (issuer) y `exp` (expiracion).
+   - Valida el claim `iss` (issuer) y `exp` (expiración).
    - Si algo falla, responde **401**.
 
 3. **`CognitoJwtAuthenticationConverter`**
    Traduce el claim `cognito:groups` a authorities `ROLE_*`:
-   - `["ADMIN"]` a `ROLE_ADMIN`
-   - `["TEACHER"]` a `ROLE_TEACHER`
-   - `["STUDENT"]` a `ROLE_STUDENT`
+   - `["ADMIN"]` → `ROLE_ADMIN`
+   - `["TEACHER"]` → `ROLE_TEACHER`
+   - `["STUDENT"]` → `ROLE_STUDENT`
 
 4. **`@PreAuthorize`** (controladores)
-   Autoriza segun el rol requerido. Si falta, responde **403**.
+   Autoriza según el rol requerido. Si falta, responde **403**.
 
-### Configuracion en Cognito
+### Configuración en Cognito
 
-En el **User Pool** de Cognito, crear tres grupos exactamente con estos nombres (mayusculas):
+En el **User Pool** de Cognito, crear tres grupos exactamente con estos nombres (mayúsculas):
 
 - `ADMIN`
 - `TEACHER`
 - `STUDENT`
 
-Los nombres son sensibles a mayusculas: `Admin` no es igual a `ADMIN` en `hasRole('ADMIN')`.
+Los nombres son sensibles a mayúsculas: `Admin` no es igual a `ADMIN` en `hasRole('ADMIN')`.
 
 ### Claims usados por el backend
 
@@ -366,7 +452,7 @@ Los nombres son sensibles a mayusculas: `Admin` no es igual a `ADMIN` en `hasRol
 | `sub` | Fallback si no hay `email` |
 | `cognito:groups` | Roles (`ROLE_*`) |
 | `iss` | Validado contra `issuer-uri` |
-| `exp` | Validado automaticamente |
+| `exp` | Validado automáticamente |
 
 Nota importante: usar **`id_token`**, no `access_token`. Los access tokens de Cognito no incluyen el claim `email`.
 
@@ -374,32 +460,9 @@ Nota importante: usar **`id_token`**, no `access_token`. Los access tokens de Co
 
 ## Base de datos
 
-El backend usa **PostgreSQL**. Se recomienda **Supabase** para entornos cloud por su capa gratuita y compatibilidad total con JDBC.
+La persistencia vive en **Supabase (PostgreSQL)** y es gestionada por las **Lambdas consumidoras** del repositorio `CloudLambda`. El BFF **no** abre conexiones JDBC en este patrón: las lecturas se resuelven invocando Lambda (`AwsLambdaClient`) y las escrituras se resuelven publicando eventos en SNS que terminan en Lambdas que sí escriben en la base de datos.
 
-### Configuracion en Supabase
-
-1. Crear un proyecto en [supabase.com](https://supabase.com/).
-2. Obtener las credenciales en **Project Settings > Database**:
-   - Host: `aws-0-<region>.pooler.supabase.com`
-   - Port: `5432`
-   - Database: `postgres`
-   - User: `postgres.<project-ref>`
-   - Password: la que elegiste al crear el proyecto
-3. Construir la URL JDBC:
-
-```
-jdbc:postgresql://aws-0-us-west-2.pooler.supabase.com:5432/postgres?sslmode=require
-```
-
-Notas clave:
-
-- El prefijo `jdbc:` es **obligatorio**; Spring Boot falla si falta.
-- `?sslmode=require` es **obligatorio**; Supabase rechaza conexiones sin TLS.
-- El usuario debe incluir el `.project-ref`, no solo `postgres`.
-
-### Esquema de tablas
-
-Hibernate crea las tablas automaticamente con `spring.jpa.hibernate.ddl-auto=update`:
+### Esquema de tablas (gestionado por las Lambdas)
 
 | Tabla | Columnas |
 |---|---|
@@ -409,11 +472,13 @@ Hibernate crea las tablas automaticamente con `spring.jpa.hibernate.ddl-auto=upd
 
 Los campos `teacher_id` y `student_id` almacenan el **email** del usuario de Cognito.
 
+> Consultar el README de `CloudLambda` para los detalles de conexión JDBC, uso de sentencias parametrizadas (`$1`, `$2`) y validaciones de reglas de negocio en el consumidor.
+
 ---
 
 ## Despliegue
 
-El despliegue esta automatizado con **GitHub Actions** y se define en `.github/workflows/deploy.yml`.
+El despliegue del BFF está automatizado con **GitHub Actions** y se define en `.github/workflows/deploy.yml`.
 
 ### Flujo del pipeline
 
@@ -431,32 +496,33 @@ push a main
          +-- Crea swap 2GB si falta
          +-- docker pull de la imagen
          +-- docker stop/rm del contenedor anterior
-         +-- docker run con las env vars
+         +-- docker run con las env vars (incluye SNS_TOPIC_ARN)
 ```
 
 ### Secrets necesarios en GitHub
 
-| Secret | Descripcion |
+| Secret | Descripción |
 |---|---|
 | `EC2_SSH_KEY` | Llave `.pem` para SSH a EC2 |
 | `GH_CR_PAT` | Personal Access Token de GitHub (para pull desde GHCR) |
 | `API_GATEWAY_SECRET` | Secreto compartido con API Gateway |
 | `COGNITO_ISSUER_URI` | Issuer URI del User Pool |
-| `DB_URL` | URL JDBC de Supabase |
-| `DB_USER` | Usuario de Supabase |
-| `DB_PASSWORD` | Password de Supabase |
+| `SNS_TOPIC_ARN` | ARN del topic SNS de eventos |
+| `AWS_REGION` | Región de AWS |
+| `AWS_ACCESS_KEY_ID` | Credencial de IAM (recomendado: usar rol IAM en EC2) |
+| `AWS_SECRET_ACCESS_KEY` | Credencial de IAM (recomendado: usar rol IAM en EC2) |
 
 ### Variables de repositorio
 
-| Variable | Descripcion |
+| Variable | Descripción |
 |---|---|
-| `TARGET_HOST_IP` | IP publica o DNS de la instancia EC2 |
+| `TARGET_HOST_IP` | IP pública o DNS de la instancia EC2 |
 
-### Configuracion de API Gateway
+### Configuración de API Gateway
 
 1. Crear un **HTTP API** en AWS API Gateway.
-2. Configurar la **integracion** apuntando a `http://<ec2-public-dns>:80`.
-3. Crear una ruta **`ANY /api/{proxy+}`** con autorizacion **`None`** (el backend valida el JWT).
+2. Configurar la **integración** apuntando a `http://<ec2-public-dns>:80`.
+3. Crear una ruta **`ANY /api/{proxy+}`** con autorización **`None`** (el backend valida el JWT).
 4. En **Request parameters > Add header**, mapear:
    - Header: `X-Secret-Gateway`
    - Value: `$stageVariables.gatewaySecret`
@@ -464,17 +530,18 @@ push a main
 6. Configurar **CORS**:
    - `Access-Control-Allow-Origin`: dominios del frontend (sin barra final)
    - `Access-Control-Allow-Methods`: `GET, POST, PUT, DELETE, OPTIONS`
-   - `Access-Control-Allow-Headers`: `Authorization, Content-Type`
+   - `Access-Control-Allow-Headers`: `Authorization, Content-Type, X-Secret-Gateway`
 
 ### Puerto en EC2
 
 El contenedor mapea el puerto **80 del host** al **8080 del contenedor**:
 
-```yaml
+```bash
 docker run -d \
   --name cloud-evaluacion \
   -p 80:8080 \
   -e PORT=8080 \
+  -e SNS_TOPIC_ARN=$SNS_TOPIC_ARN \
   ...
 ```
 
@@ -485,61 +552,30 @@ El **Security Group** de la instancia EC2 debe permitir:
 
 ---
 
-## Pruebas
-
-### Ejecutar la suite
-
-```bash
-./gradlew test
-```
-
-### Prueba manual de los tres escenarios de seguridad
-
-```bash
-API="https://<api-gateway-id>.execute-api.<region>.amazonaws.com"
-TOKEN="eyJraWQiOiJ..."   # id_token valido de Cognito
-
-# Token valido -> 200
-curl -i -H "Authorization: Bearer $TOKEN" "$API/api/me"
-
-# Sin token -> 401
-curl -i "$API/api/me"
-
-# Token con rol insuficiente -> 403
-STUDENT_TOKEN="eyJraWQiOiJ..."   # id_token de un usuario STUDENT
-curl -i -H "Authorization: Bearer $STUDENT_TOKEN" "$API/api/admin/courses"
-```
-
----
-
 ## Seguridad
 
 ### Capas de defensa
 
 | Capa | Componente | Protege contra |
 |---|---|---|
-| 1 | API Gateway | Exposicion directa de EC2, rate limiting |
+| 1 | API Gateway | Exposición directa de EC2, rate limiting |
 | 2 | `SecretGatewayFilter` | Peticiones fuera de API Gateway |
 | 3 | `BearerTokenAuthenticationFilter` | Tokens falsificados o expirados |
-| 4 | `CognitoJwtAuthenticationConverter` | Escalada de privilegios por manipulacion de roles |
+| 4 | `CognitoJwtAuthenticationConverter` | Escalada de privilegios por manipulación de roles |
 | 5 | `@PreAuthorize` | Acceso no autorizado a endpoints |
+| 6 | SNS + Filter Policy | Enrutamiento de eventos solo a consumidores interesados |
 
-### Buenas practicas implementadas
+### Buenas prácticas implementadas
 
 - **PKCE** en el flujo de login del frontend (Authorization Code + PKCE).
-- **Validacion de firma** con JWKS de Cognito, no con clave estatica.
-- **Sin `client_secret`** en el frontend (SPA publica).
+- **Validación de firma** con JWKS de Cognito, no con clave estática.
+- **Sin `client_secret`** en el frontend (SPA pública).
 - **Sin `open-in-view`** en Hibernate (evita fugas de conexiones).
 - **`X-Secret-Gateway`** como control de origen para EC2.
-- **TLS obligatorio** con Supabase (`?sslmode=require`).
-
-### Recomendaciones
-
-- **Rotar `API_GATEWAY_SECRET`** periodicamente y tras cualquier filtracion.
-- **Usar IAM Roles** en EC2 en lugar de credenciales estaticas.
-- **Restringir el Security Group de EC2** al prefijo de IP de API Gateway en produccion.
-- **Habilitar CloudWatch Logs** en API Gateway para auditar peticiones.
-- **Anadir un validador de audiencia** al `JwtDecoder` si se requieren varios clientes.
+- **TLS obligatorio** con Supabase (`?sslmode=require`) en el consumidor.
+- **Separación de responsabilidades**: BFF = productor; Lambda = consumidor y acceso a datos.
+- **Configuración centralizada** de recursos de mensajería vía variables de entorno y `application.properties`.
+- **IAM Roles** recomendados sobre credenciales estáticas.
 
 ---
 
@@ -549,6 +585,10 @@ curl -i -H "Authorization: Bearer $STUDENT_TOKEN" "$API/api/admin/courses"
 - [Spring Security OAuth 2.0 Resource Server](https://docs.spring.io/spring-security/reference/servlet/oauth2/resource-server/index.html)
 - [AWS Cognito Developer Guide](https://docs.aws.amazon.com/cognito/latest/developerguide/what-is-amazon-cognito.html)
 - [AWS API Gateway HTTP APIs](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api.html)
+- [AWS SNS Developer Guide](https://docs.aws.amazon.com/sns/latest/dg/welcome.html)
+- [AWS SQS Developer Guide](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/welcome.html)
+- [AWS Lambda Developer Guide](https://docs.aws.amazon.com/lambda/latest/dg/welcome.html)
+- [AWS SDK for Java v2](https://docs.aws.amazon.com/sdk-for-java/latest/developer-guide/home.html)
 - [Supabase Database Documentation](https://supabase.com/docs/guides/database)
 
 ---
@@ -558,4 +598,4 @@ curl -i -H "Authorization: Bearer $STUDENT_TOKEN" "$API/api/admin/courses"
 **Gabriel Emilio** - `gaboemi@duoc.cl`
 
 Asignatura: **DSY1107 Desarrollo Cloud Native**
-Evaluacion Parcial N 1 - 2026
+Evaluación Parcial N° 3 - 2026
