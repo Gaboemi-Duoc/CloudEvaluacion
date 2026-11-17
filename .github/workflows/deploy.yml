@@ -3,39 +3,42 @@ name: Deploy Spring Boot to EC2 via GHCR
 on:
   push:
     branches:
-      - main # Se ejecuta automáticamente al hacer push a la rama main
+      - main
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: gaboemi-duoc/cloudevaluacion
   CONTAINER_NAME: cloud-evaluacion
+  APP_DIR: /home/ec2-user/cloud-evaluacion
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write # Permiso obligatorio para escribir en GitHub Packages
+      packages: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 1. Configurar JDK 21 y la caché automática para Gradle
+      # 1. JDK 21 + Gradle cache scoped to bff/
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
           distribution: "temurin"
           java-version: "21"
           cache: "gradle"
+          cache-dependency-path: "bff/**/*.gradle*"
 
-      # 2. Dar permisos de ejecución al Gradle Wrapper y compilar el JAR
+      # 2. Build the BFF from bff/
       - name: Build with Gradle
+        working-directory: ./bff
         run: |
           chmod +x gradlew
           ./gradlew bootJar -x test
 
-      # 3. Autenticarse en GitHub Container Registry (GHCR) usando las variables de GitHub
+      # 3. GHCR login (same as before)
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -43,27 +46,53 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 4. Construir y subir la imagen Docker a GHCR con el tag 'latest'
+      # 4. Build & push using bff/ as context
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: .
+          context: ./bff
+          file: ./bff/Dockerfile
           push: true
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
 
-      # 5. Despliegue Automatizado e Idempotente vía SSH
+      # 5a. Ensure APP_DIR exists on the EC2 (must run before scp)
+      - name: Ensure app dir on EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ vars.TARGET_HOST_IP }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: mkdir -p ${{ env.APP_DIR }}
+
+      # 5b. Copy kafka/ to EC2, flattening the leading "kafka/" segment
+      #     Result: $APP_DIR/docker-compose.yml, $APP_DIR/kafka/init-topics.sh
+      - name: Copy kafka to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ vars.TARGET_HOST_IP }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "kafka/**"
+          target: ${{ env.APP_DIR }}
+          strip_components: 1
+          overwrite: true
+
+      # 5c. Deploy: write .env, bring stack up with compose, init topics
       - name: Deploy to EC2 Instance
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ vars.TARGET_HOST_IP }} # Lee tu IP EC2
-          username: ec2-user # Usuario Amazon Linux
-          key: ${{ secrets.EC2_SSH_KEY }} # Tu llave .pem
+          host: ${{ vars.TARGET_HOST_IP }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
           port: 22
-          envs: TARGET_HOST_IP
+          # Whitelist what lands in the remote shell
+          envs: APP_DIR,CONTAINER_NAME,GH_CR_PAT,GITHUB_ACTOR,REGISTRY,IMAGE_NAME,PUBLIC_HOST_URL,API_GATEWAY_SECRET,COGNITO_ISSUER_URI,DB_URL,DB_USER,DB_PASSWORD
           script: |
-            # --- APROVISIONAMIENTO IDEMPOTENTE DE SWAP ---
+            set -e
+
+            # --- SWAP (idempotent) ---
             if [ ! -f /swapfile ]; then
-              echo "Instancia sin Swap. Creando 2GB..."
+              echo "Creating 2GB swap..."
               sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
               sudo chmod 600 /swapfile
               sudo mkswap /swapfile
@@ -71,9 +100,9 @@ jobs:
               echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
             fi
 
-            # --- APROVISIONAMIENTO IDEMPOTENTE DE DOCKER ---
+            # --- DOCKER (idempotent) ---
             if ! command -v docker &> /dev/null; then
-              echo "Docker no está instalado. Iniciando instalación..."
+              echo "Installing Docker..."
               sudo dnf update -y
               sudo dnf install -y docker
               sudo systemctl start docker
@@ -81,33 +110,61 @@ jobs:
               sudo usermod -aG docker ec2-user
             fi
 
-            # --- EJECUCIÓN SEGURA CON PERMISOS REFRESCADOS ---
+            # --- COMPOSE PLUGIN (idempotent) ---
+            if ! sudo docker compose version &> /dev/null; then
+              echo "Installing docker-compose-plugin..."
+              sudo dnf install -y docker-compose-plugin
+            fi
+
+            # --- PRIVATE IP for Kafka EXTERNAL advertised listener ---
+            EC2_PRIVATE_IP=$(hostname -I | awk '{print $1}')
+            echo "EC2 private IP = $EC2_PRIVATE_IP"
+
+            cd "$APP_DIR"
+
+            # --- WRITE .env (values come from GitHub Secrets, expanded remotely) ---
+            cat > .env <<EOF
+            EC2_PRIVATE_IP=${EC2_PRIVATE_IP}
+            PUBLIC_HOST_URL=${PUBLIC_HOST_URL}
+            API_GATEWAY_SECRET=${API_GATEWAY_SECRET}
+            COGNITO_ISSUER_URI=${COGNITO_ISSUER_URI}
+            DB_URL=${DB_URL}
+            DB_USER=${DB_USER}
+            DB_PASSWORD=${DB_PASSWORD}
+            EOF
+
+            chmod +x kafka/init-topics.sh || true
+
+            # --- BRING STACK UP ---
             sg docker -c "
-              # Autenticar el Docker local del EC2 en GHCR
-              echo '${{ secrets.GH_CR_PAT }}' | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+              set -e
+              echo '$GH_CR_PAT' | docker login $REGISTRY -u $GITHUB_ACTOR --password-stdin
 
-              # Descargar la última versión de la imagen
-              docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+              # One-time cleanup of the legacy 'docker run' container (pre-compose migration)
+              docker rm -f $CONTAINER_NAME >/dev/null 2>&1 || true
 
-              # --- PASOS IDEMPOTENTES DEL CONTENEDOR ---
-              docker stop ${{ env.CONTAINER_NAME }} || true
-              docker rm ${{ env.CONTAINER_NAME }} || true
-              docker image prune -f
-
-              # --- MAPEO CRUZADO: Puerto 80 del Servidor al 8080 del Contenedor ---
-              docker run -d \
-                --name ${{ env.CONTAINER_NAME }} \
-                -p 80:8080 \
-                -e PORT=8080 \
-                -e SNS_TOPIC_ARN='${{ secrets.SNS_TOPIC_ARN }}' \
-                -e PUBLIC_HOST_URL='http://$TARGET_HOST_IP' \
-                -e API_GATEWAY_SECRET='${{ secrets.API_GATEWAY_SECRET }}' \
-                -e COGNITO_ISSUER_URI='${{ secrets.COGNITO_ISSUER_URI }}' \
-                -e DB_URL='${{ secrets.DB_URL }}' \
-                -e DB_USER='${{ secrets.DB_USER }}' \
-                -e DB_PASSWORD='${{ secrets.DB_PASSWORD }}' \
-                --restart unless-stopped \
-                ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+              cd $APP_DIR
+              docker compose pull
+              docker compose up -d --remove-orphans
+              docker compose ps
             "
+
+            # --- INIT TOPICS (idempotent, tolerates 'already exists') ---
+            bash kafka/init-topics.sh || true
+
+            # --- POST-DEPLOY STATUS ---
+            echo "--- Container status ---"
+            sudo docker ps --filter "name=kafka" --filter "name=$CONTAINER_NAME" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
         env:
-          TARGET_HOST_IP: ${{ vars.TARGET_HOST_IP }}
+          APP_DIR: ${{ env.APP_DIR }}
+          CONTAINER_NAME: ${{ env.CONTAINER_NAME }}
+          GH_CR_PAT: ${{ secrets.GH_CR_PAT }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          PUBLIC_HOST_URL: http://${{ vars.TARGET_HOST_IP }}
+          API_GATEWAY_SECRET: ${{ secrets.API_GATEWAY_SECRET }}
+          COGNITO_ISSUER_URI: ${{ secrets.COGNITO_ISSUER_URI }}
+          DB_URL: ${{ secrets.DB_URL }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
