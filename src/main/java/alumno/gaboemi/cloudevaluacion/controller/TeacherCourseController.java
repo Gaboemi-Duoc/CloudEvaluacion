@@ -1,7 +1,7 @@
 package alumno.gaboemi.cloudevaluacion.controller;
 
 import alumno.gaboemi.cloudevaluacion.client.AwsLambdaClient;
-import alumno.gaboemi.cloudevaluacion.client.AwsSnsClient;
+import alumno.gaboemi.cloudevaluacion.client.KafkaEventPublisher;
 import alumno.gaboemi.cloudevaluacion.dto.*;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -11,7 +11,6 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.HashMap;
 import java.util.Map;
 
 @RestController
@@ -20,11 +19,11 @@ import java.util.Map;
 public class TeacherCourseController {
 
     private final AwsLambdaClient lambda;
-    private final AwsSnsClient sns;
+    private final KafkaEventPublisher events;
 
-    public TeacherCourseController(AwsLambdaClient lambda, AwsSnsClient sns) {
+    public TeacherCourseController(AwsLambdaClient lambda, KafkaEventPublisher events) {
         this.lambda = lambda;
-        this.sns = sns;
+        this.events = events;
     }
 
     @GetMapping
@@ -40,9 +39,9 @@ public class TeacherCourseController {
     @PostMapping("/{id}/enrollments")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ResponseEntity<String> enroll(@PathVariable Long id, @Valid @RequestBody EnrollStudentRequest req, @AuthenticationPrincipal Jwt jwt) {
-        sns.publishEvent("TEACHER_ENROLL_STUDENT", Map.of(
-            "courseId", id, 
-            "studentId", req.studentId(), 
+        events.publishEvent("TEACHER_ENROLL_STUDENT", Map.of(
+            "courseId", id,
+            "studentId", req.studentId(),
             "teacherId", identity(jwt)
         ));
         return ResponseEntity.accepted().body("{\"message\":\"Enrollment initiated\"}");
@@ -56,7 +55,7 @@ public class TeacherCourseController {
     @PostMapping("/{id}/tasks")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ResponseEntity<String> createTask(@PathVariable Long id, @Valid @RequestBody CreateTaskRequest req, @AuthenticationPrincipal Jwt jwt) {
-        sns.publishEvent("TEACHER_CREATE_TASK", Map.of(
+        events.publishEvent("TEACHER_CREATE_TASK", Map.of(
             "courseId", id,
             "data", req,
             "teacherId", identity(jwt)

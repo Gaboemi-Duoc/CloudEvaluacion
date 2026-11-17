@@ -23,10 +23,14 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-security-oauth2-resource-server'
     implementation 'org.springframework.boot:spring-boot-starter-webmvc'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
-    // AWS SDK v2 for Lambda
+
+    // Kafka (Spring Boot 4 BOM manages the version — no explicit version needed)
+    implementation 'org.springframework.kafka:spring-kafka'
+
+    // AWS SDK v2 — Lambda only
     implementation platform('software.amazon.awssdk:bom:2.25.19')
     implementation 'software.amazon.awssdk:lambda'
-    implementation 'software.amazon.awssdk:sns'
+
     compileOnly 'org.projectlombok:lombok'
     annotationProcessor 'org.projectlombok:lombok'
     testImplementation 'org.springframework.boot:spring-boot-starter-security-oauth2-resource-server-test'
