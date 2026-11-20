@@ -1,7 +1,7 @@
 package alumno.gaboemi.cloudevaluacion.controller;
 
 import alumno.gaboemi.cloudevaluacion.client.AwsLambdaClient;
-import alumno.gaboemi.cloudevaluacion.client.AwsSnsClient;
+import alumno.gaboemi.cloudevaluacion.client.KafkaEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -17,11 +17,11 @@ import java.util.Map;
 public class StudentController {
 
     private final AwsLambdaClient lambda;
-    private final AwsSnsClient sns;
+    private final KafkaEventPublisher events;
 
-    public StudentController(AwsLambdaClient lambda, AwsSnsClient sns) {
+    public StudentController(AwsLambdaClient lambda, KafkaEventPublisher events) {
         this.lambda = lambda;
-        this.sns = sns;
+        this.events = events;
     }
 
     @GetMapping("/courses")
@@ -37,7 +37,7 @@ public class StudentController {
     @PostMapping("/courses/{id}/enroll")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ResponseEntity<String> enroll(@PathVariable Long id, @AuthenticationPrincipal Jwt jwt) {
-        sns.publishEvent("STUDENT_ENROLL", Map.of("courseId", id, "studentId", TeacherCourseController.identity(jwt)));
+        events.publishEvent("STUDENT_ENROLL", Map.of("courseId", id, "studentId", TeacherCourseController.identity(jwt)));
         return ResponseEntity.accepted().body("{\"message\":\"Enrollment initiated\"}");
     }
 
