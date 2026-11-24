@@ -1,11 +1,9 @@
 package alumno.gaboemi.cloudevaluacion.controller;
 
-import alumno.gaboemi.cloudevaluacion.client.KafkaEventPublisher;
+import alumno.gaboemi.cloudevaluacion.client.AwsSnsClient;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -15,20 +13,16 @@ import java.util.Map;
 @PreAuthorize("hasRole('Admin')")
 public class ReportController {
 
-    private final KafkaEventPublisher events;
+    private final AwsSnsClient sns;
 
-    public ReportController(KafkaEventPublisher events) {
-        this.events = events;
+    public ReportController(AwsSnsClient sns) {
+        this.sns = sns;
     }
 
     @PostMapping("/generate")
     @ResponseStatus(HttpStatus.ACCEPTED)
-    public ResponseEntity<String> generateReport(@AuthenticationPrincipal Jwt jwt) {
-        String email = jwt.getClaimAsString("email");
-        if (email == null) email = jwt.getSubject();
-
-        events.publishEvent("GENERATE_REPORT", Map.of("requestedBy", email));
-
+    public ResponseEntity<String> generateReport() {
+        sns.publishEvent("GENERATE_REPORT", Map.of());
         return ResponseEntity.accepted().body("{\"message\":\"Report generation initiated\"}");
     }
 }

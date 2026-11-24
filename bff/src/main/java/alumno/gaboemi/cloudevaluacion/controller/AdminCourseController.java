@@ -1,7 +1,7 @@
 package alumno.gaboemi.cloudevaluacion.controller;
 
 import alumno.gaboemi.cloudevaluacion.client.AwsLambdaClient;
-import alumno.gaboemi.cloudevaluacion.client.KafkaEventPublisher;
+import alumno.gaboemi.cloudevaluacion.client.AwsSnsClient;
 import alumno.gaboemi.cloudevaluacion.dto.*;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -17,11 +17,11 @@ import java.util.Map;
 public class AdminCourseController {
 
     private final AwsLambdaClient lambda;
-    private final KafkaEventPublisher events;
+    private final AwsSnsClient sns;
 
-    public AdminCourseController(AwsLambdaClient lambda, KafkaEventPublisher events) {
+    public AdminCourseController(AwsLambdaClient lambda, AwsSnsClient sns) {
         this.lambda = lambda;
-        this.events = events;
+        this.sns = sns;
     }
 
     @GetMapping
@@ -37,28 +37,28 @@ public class AdminCourseController {
     @PostMapping
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ResponseEntity<String> create(@Valid @RequestBody CreateCourseRequest req) {
-        events.publishEvent("ADMIN_CREATE_COURSE", req);
+        sns.publishEvent("ADMIN_CREATE_COURSE", req);
         return ResponseEntity.accepted().body("{\"message\":\"Course creation initiated\"}");
     }
 
     @PutMapping("/{id}/teacher")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ResponseEntity<String> assignTeacher(@PathVariable Long id, @Valid @RequestBody AssignTeacherRequest req) {
-        events.publishEvent("ADMIN_ASSIGN_TEACHER", Map.of("courseId", id, "teacherId", req.teacherId()));
+        sns.publishEvent("ADMIN_ASSIGN_TEACHER", Map.of("courseId", id, "teacherId", req.teacherId()));
         return ResponseEntity.accepted().body("{\"message\":\"Teacher assignment initiated\"}");
     }
 
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ResponseEntity<String> delete(@PathVariable Long id) {
-        events.publishEvent("ADMIN_DELETE_COURSE", Map.of("courseId", id));
+        sns.publishEvent("ADMIN_DELETE_COURSE", Map.of("courseId", id));
         return ResponseEntity.accepted().body("{\"message\":\"Course deletion initiated\"}");
     }
 
     @PostMapping("/{id}/enrollments")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ResponseEntity<String> enroll(@PathVariable Long id, @Valid @RequestBody EnrollStudentRequest req) {
-        events.publishEvent("ADMIN_ENROLL_STUDENT", Map.of("courseId", id, "studentId", req.studentId()));
+        sns.publishEvent("ADMIN_ENROLL_STUDENT", Map.of("courseId", id, "studentId", req.studentId()));
         return ResponseEntity.accepted().body("{\"message\":\"Enrollment initiated\"}");
     }
 
