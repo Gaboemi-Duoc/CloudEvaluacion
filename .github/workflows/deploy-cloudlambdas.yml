@@ -1,0 +1,66 @@
+name: Deploy CloudLambdas
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'CloudLambda/**'
+      - '.github/workflows/deploy-cloudlambdas.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - folder: lambda-course-service
+            function: CloudLambdaCourseService
+          - folder: lambda-enrollment-service
+            function: CloudLambdaEnrollmentService
+          - folder: lambda-task-service
+            function: CloudLambdaTaskService
+          - folder: lambda-notification-worker
+            function: CloudLambdaNotificationWorker
+          - folder: lambda-report-generator
+            function: CloudLambdaReportGenerator
+          - folder: lambda-db-write-dispatcher
+            function: CloudLambdaDbWriteDispatcher
+
+    defaults:
+      run:
+        working-directory: CloudLambda/${{ matrix.folder }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: CloudLambda/${{ matrix.folder }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --omit=dev
+
+      - name: Build ZIP
+        run: zip -r ../${{ matrix.folder }}.zip . -x "*.git*" "*.DS_Store*"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Deploy Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name "${{ matrix.function }}" \
+            --zip-file "fileb://../${{ matrix.folder }}.zip"
+          aws lambda wait function-updated \
+            --function-name "${{ matrix.function }}"
